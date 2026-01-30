@@ -6,6 +6,8 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Management;
+using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -24,12 +26,13 @@ namespace NmapInventory
         private Button hardwareButton;
         private Button exportButton;
         private Button remoteHardwareButton;
+        private Button updateSoftwareButton;
         private Label statusLabel;
 
         private DataGridView deviceTable;
         private TextBox rawOutputTextBox;
         private TextBox hardwareInfoTextBox;
-        private TextBox softwareInfoTextBox;
+        private DataGridView softwareGridView;
 
         private DataGridView dbDeviceTable;
         private DataGridView dbSoftwareTable;
@@ -39,6 +42,7 @@ namespace NmapInventory
         private List<DeviceInfo> currentDevices = new List<DeviceInfo>();
         private string currentHardwareInfo = "";
         private List<SoftwareInfo> currentSoftware = new List<SoftwareInfo>();
+        private string currentRemotePC = "";
 
         private string dbPath = "nmap_inventory.db";
 
@@ -159,16 +163,31 @@ namespace NmapInventory
             hwTab.Controls.Add(hardwareInfoTextBox);
 
             // Software
-            softwareInfoTextBox = new TextBox
+            softwareGridView = new DataGridView
             {
                 Dock = DockStyle.Fill,
-                Multiline = true,
+                ReadOnly = false,
+                AllowUserToAddRows = false,
                 ScrollBars = ScrollBars.Both,
-                Font = new Font("Consolas", 9),
-                ReadOnly = true
+                Font = new Font("Consolas", 9)
             };
+            softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Software", DataPropertyName = "Name", Width = 250, ReadOnly = true });
+            softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", DataPropertyName = "Version", Width = 100, ReadOnly = true });
+            softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", DataPropertyName = "Publisher", Width = 150, ReadOnly = true });
+            softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Installiert", DataPropertyName = "InstallDate", Width = 120, ReadOnly = true });
+
+            DataGridViewButtonColumn updateBtn = new DataGridViewButtonColumn
+            {
+                HeaderText = "Aktion",
+                Text = "Update",
+                Width = 80,
+                UseColumnTextForButtonValue = true
+            };
+            softwareGridView.Columns.Add(updateBtn);
+            softwareGridView.CellClick += SoftwareGridView_CellClick;
+
             TabPage swTab = new TabPage("Software");
-            swTab.Controls.Add(softwareInfoTextBox);
+            swTab.Controls.Add(softwareGridView);
 
             tabControl.TabPages.Add(devicesTab);
             tabControl.TabPages.Add(nmapTab);
@@ -361,6 +380,19 @@ namespace NmapInventory
                     using (SQLiteCommand cmd = new SQLiteCommand(createTableQuery, conn))
                     {
                         cmd.ExecuteNonQuery();
+                    }
+
+                    // Migration: InstallDate Spalte hinzufügen falls nicht vorhanden
+                    try
+                    {
+                        using (SQLiteCommand cmd = new SQLiteCommand("ALTER TABLE Software ADD COLUMN InstallDate TEXT;", conn))
+                        {
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                    catch
+                    {
+                        // Spalte existiert bereits, kein Fehler
                     }
 
                     statusLabel.Text = "Datenbank initialisiert";
@@ -850,36 +882,14 @@ namespace NmapInventory
             Task.Run(() =>
             {
                 string hw = GetCompleteHardwareInfo();
-                List<SoftwareInfo> sw = GetCompleteInstalledSoftware();
+                List<SoftwareInfo> sw = GetPowerShellSoftwareList();
 
                 Invoke(new MethodInvoker(() =>
                 {
                     currentHardwareInfo = hw;
                     currentSoftware = sw;
                     hardwareInfoTextBox.Text = hw;
-
-                    StringBuilder swText = new StringBuilder();
-                    swText.AppendLine("=== INSTALLIERTE SOFTWARE ===\n");
-                    int counter = 1;
-                    foreach (var software in sw.OrderBy(s => s.Name))
-                    {
-                        swText.AppendLine($"{counter}. {software.Name}");
-                        if (!string.IsNullOrEmpty(software.Version) && software.Version != "N/A")
-                            swText.AppendLine($"   Version: {software.Version}");
-                        if (!string.IsNullOrEmpty(software.Publisher))
-                            swText.AppendLine($"   Hersteller: {software.Publisher}");
-                        if (!string.IsNullOrEmpty(software.InstallLocation))
-                            swText.AppendLine($"   Installationsort: {software.InstallLocation}");
-                        if (!string.IsNullOrEmpty(software.InstallDate))
-                            swText.AppendLine($"   Installiert: {software.InstallDate}");
-                        swText.AppendLine();
-                        counter++;
-                    }
-                    swText.AppendLine($"\n========================================");
-                    swText.AppendLine($"Insgesamt {sw.Count} Programme gefunden");
-                    swText.AppendLine($"========================================");
-
-                    softwareInfoTextBox.Text = swText.ToString();
+                    DisplaySoftwareInGrid(sw);
                     SaveSoftwareToDatabase();
                     statusLabel.Text = "Fertig";
                     hardwareButton.Enabled = true;
@@ -891,9 +901,9 @@ namespace NmapInventory
         {
             Form remoteForm = new Form
             {
-                Text = "Remote Hardware Abfrage",
-                Width = 450,
-                Height = 200,
+                Text = "Remote Hardware + Software Abfrage",
+                Width = 500,
+                Height = 300,
                 StartPosition = FormStartPosition.CenterScreen,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false,
@@ -902,16 +912,31 @@ namespace NmapInventory
             };
 
             Label ipLabel = new Label { Text = "Computer-IP:", Location = new Point(20, 30), AutoSize = true };
-            TextBox ipTextBox = new TextBox { Location = new Point(130, 27), Width = 250, Text = "" };
+            TextBox ipTextBox = new TextBox { Location = new Point(150, 27), Width = 300, Text = "" };
 
-            Label credLabel = new Label { Text = "Benutzername:", Location = new Point(20, 70), AutoSize = true };
-            TextBox credTextBox = new TextBox { Location = new Point(130, 67), Width = 250, Text = "" };
+            Label userLabel = new Label { Text = "Benutzername:", Location = new Point(20, 70), AutoSize = true };
+            TextBox userTextBox = new TextBox { Location = new Point(150, 67), Width = 300, Text = "" };
 
             Label passLabel = new Label { Text = "Passwort:", Location = new Point(20, 110), AutoSize = true };
-            TextBox passTextBox = new TextBox { Location = new Point(130, 107), Width = 250, UseSystemPasswordChar = true, Text = "" };
+            TextBox passTextBox = new TextBox
+            {
+                Location = new Point(150, 107),
+                Width = 300,
+                UseSystemPasswordChar = true,
+                Text = ""
+            };
 
-            Button queryButton = new Button { Text = "Abfragen", Location = new Point(130, 150), Width = 100, Height = 30 };
-            Button cancelButton = new Button { Text = "Abbrechen", Location = new Point(240, 150), Width = 100, Height = 30 };
+            Label infoLabel = new Label
+            {
+                Text = "Beispiel: DOMAIN\\Administrator oder Administrator\n(Passwort kann leer bleiben)",
+                Location = new Point(150, 140),
+                AutoSize = true,
+                Font = new Font(Font, FontStyle.Italic),
+                ForeColor = SystemColors.ControlDark
+            };
+
+            Button queryButton = new Button { Text = "Verbinden & Abfragen", Location = new Point(150, 170), Width = 140, Height = 35 };
+            Button cancelButton = new Button { Text = "Abbrechen", Location = new Point(310, 170), Width = 140, Height = 35 };
 
             cancelButton.Click += (s, e1) => remoteForm.Close();
 
@@ -923,27 +948,291 @@ namespace NmapInventory
                     return;
                 }
 
+                if (string.IsNullOrEmpty(userTextBox.Text))
+                {
+                    MessageBox.Show("Bitte Benutzername eingeben!");
+                    return;
+                }
+
                 string ip = ipTextBox.Text;
-                string username = credTextBox.Text;
-                string password = passTextBox.Text;
+                string username = userTextBox.Text;
+                string password = passTextBox.Text; // Kann leer sein!
 
                 remoteForm.Close();
                 remoteHardwareButton.Enabled = false;
-                statusLabel.Text = "Remote Hardware wird abgefragt...";
+                statusLabel.Text = $"Verbinde zu {ip}...";
 
-                Task.Run(() => GetRemoteHardwareInfo(ip, username, password));
+                Task.Run(() => GetRemoteHardwareAndSoftwareViaPowerShell(ip, username, password));
             };
 
             remoteForm.Controls.Add(ipLabel);
             remoteForm.Controls.Add(ipTextBox);
-            remoteForm.Controls.Add(credLabel);
-            remoteForm.Controls.Add(credTextBox);
+            remoteForm.Controls.Add(userLabel);
+            remoteForm.Controls.Add(userTextBox);
             remoteForm.Controls.Add(passLabel);
             remoteForm.Controls.Add(passTextBox);
+            remoteForm.Controls.Add(infoLabel);
             remoteForm.Controls.Add(queryButton);
             remoteForm.Controls.Add(cancelButton);
 
             remoteForm.ShowDialog(this);
+        }
+
+        private void GetRemoteHardwareAndSoftwareViaPowerShell(string computerIP, string username, string password)
+        {
+            try
+            {
+                StringBuilder hwSb = new StringBuilder();
+                hwSb.AppendLine($"=== REMOTE HARDWARE INFO: {computerIP} ===\n");
+
+                // WMI Verbindungsoptionen mit Credentials
+                ConnectionOptions connOptions = new ConnectionOptions
+                {
+                    Authentication = AuthenticationLevel.PacketPrivacy,
+                    Impersonation = ImpersonationLevel.Impersonate,
+                    EnablePrivileges = true,
+                    Timeout = TimeSpan.FromSeconds(30)
+                };
+
+                ManagementScope scope = new ManagementScope($@"\\{computerIP}\root\cimv2", connOptions);
+
+                // Verbinde mit Credentials
+                try
+                {
+                    scope.Connect();
+                }
+                catch
+                {
+                    // Versuche mit expliziten Credentials
+                    ManagementPath path = new ManagementPath($@"\\{computerIP}\root\cimv2");
+                    scope = new ManagementScope(path, connOptions);
+                    scope.Connect();
+                }
+
+                // Betriebssystem
+                hwSb.AppendLine("=== BETRIEBSSYSTEM ===");
+                try
+                {
+                    ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Caption, Version FROM Win32_OperatingSystem"));
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        hwSb.AppendLine("OS: " + obj["Caption"]);
+                        hwSb.AppendLine("Version: " + obj["Version"]);
+                    }
+                }
+                catch (Exception ex) { hwSb.AppendLine("Fehler: " + ex.Message); }
+                hwSb.AppendLine();
+
+                // Prozessor
+                hwSb.AppendLine("=== PROZESSOR ===");
+                try
+                {
+                    ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Name, Manufacturer, MaxClockSpeed, NumberOfCores FROM Win32_Processor"));
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        hwSb.AppendLine("Name: " + obj["Name"]);
+                        hwSb.AppendLine("Hersteller: " + obj["Manufacturer"]);
+                        hwSb.AppendLine("Taktfrequenz: " + obj["MaxClockSpeed"] + " MHz");
+                        hwSb.AppendLine("Kerne: " + obj["NumberOfCores"]);
+                    }
+                }
+                catch (Exception ex) { hwSb.AppendLine("Fehler: " + ex.Message); }
+                hwSb.AppendLine();
+
+                // RAM
+                hwSb.AppendLine("=== SPEICHER (RAM) ===");
+                try
+                {
+                    ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Manufacturer, Capacity, Speed FROM Win32_PhysicalMemory"));
+                    int count = 0;
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        count++;
+                        hwSb.AppendLine("RAM " + count + ":");
+                        hwSb.AppendLine("  Hersteller: " + obj["Manufacturer"]);
+                        long bytes = Convert.ToInt64(obj["Capacity"]);
+                        hwSb.AppendLine("  Kapazität: " + (bytes / 1024 / 1024 / 1024) + " GB");
+                        hwSb.AppendLine("  Geschwindigkeit: " + obj["Speed"] + " MHz");
+                    }
+                }
+                catch (Exception ex) { hwSb.AppendLine("Fehler: " + ex.Message); }
+                hwSb.AppendLine();
+
+                // Festplatten
+                hwSb.AppendLine("=== FESTPLATTEN ===");
+                try
+                {
+                    ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Name, Model, Size FROM Win32_DiskDrive"));
+                    int count = 0;
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        count++;
+                        hwSb.AppendLine("Disk " + count + ":");
+                        hwSb.AppendLine("  Name: " + obj["Name"]);
+                        hwSb.AppendLine("  Modell: " + obj["Model"]);
+                        long bytes = Convert.ToInt64(obj["Size"]);
+                        hwSb.AppendLine("  Größe: " + (bytes / 1024 / 1024 / 1024) + " GB");
+                    }
+                }
+                catch (Exception ex) { hwSb.AppendLine("Fehler: " + ex.Message); }
+                hwSb.AppendLine();
+
+                // Grafikkarte
+                hwSb.AppendLine("=== GRAFIKKARTE ===");
+                try
+                {
+                    ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Name, DriverVersion FROM Win32_VideoController"));
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        hwSb.AppendLine("Name: " + obj["Name"]);
+                        hwSb.AppendLine("Treiber: " + obj["DriverVersion"]);
+                    }
+                }
+                catch (Exception ex) { hwSb.AppendLine("Fehler: " + ex.Message); }
+
+                // Software via WMI-Registry auslesen
+                List<SoftwareInfo> remoteSoftware = GetRemoteSoftwareViaWMI(computerIP, username, password);
+
+                Invoke(new MethodInvoker(() =>
+                {
+                    hardwareInfoTextBox.Text = hwSb.ToString();
+                    DisplaySoftwareInGrid(remoteSoftware, computerIP);
+                    statusLabel.Text = "Remote Hardware + Software Abfrage abgeschlossen";
+                    remoteHardwareButton.Enabled = true;
+                }));
+            }
+            catch (Exception ex)
+            {
+                Invoke(new MethodInvoker(() =>
+                {
+                    MessageBox.Show("Fehler bei Remote Abfrage: " + ex.Message, "Fehler");
+                    statusLabel.Text = "Fehler bei Remote Hardware + Software Abfrage";
+                    remoteHardwareButton.Enabled = true;
+                }));
+            }
+        }
+
+        private List<SoftwareInfo> GetRemoteSoftwareViaWMI(string computerIP, string username, string password)
+        {
+            List<SoftwareInfo> software = new List<SoftwareInfo>();
+
+            try
+            {
+                ConnectionOptions connOptions = new ConnectionOptions
+                {
+                    Authentication = AuthenticationLevel.PacketPrivacy,
+                    Impersonation = ImpersonationLevel.Impersonate,
+                    EnablePrivileges = true,
+                    Timeout = TimeSpan.FromSeconds(30)
+                };
+
+                ManagementScope scope = new ManagementScope($@"\\{computerIP}\root\default", connOptions);
+                scope.Connect();
+
+                // Win32_Product Klasse nutzen (Alternative zu Registry)
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Name, Version, Vendor FROM Win32_Product"));
+
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    try
+                    {
+                        string name = obj["Name"]?.ToString();
+                        if (string.IsNullOrEmpty(name) || name.Contains("Update") || name.Contains("Hotfix") || name.StartsWith("KB"))
+                            continue;
+
+                        software.Add(new SoftwareInfo
+                        {
+                            Name = name,
+                            Version = obj["Version"]?.ToString() ?? "N/A",
+                            Publisher = obj["Vendor"]?.ToString() ?? "",
+                            InstallLocation = "",
+                            Source = "WMI",
+                            InstallDate = ""
+                        });
+                    }
+                    catch { }
+                }
+
+                // Falls Win32_Product leer, versuche Registry über WMI
+                if (software.Count == 0)
+                {
+                    software = GetRemoteRegistrySoftware(scope);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"WMI Software-Abfrage Fehler: {ex.Message}", "Fehler");
+            }
+
+            return software.OrderBy(s => s.Name).ToList();
+        }
+
+        private List<SoftwareInfo> GetRemoteRegistrySoftware(ManagementScope scope)
+        {
+            List<SoftwareInfo> software = new List<SoftwareInfo>();
+
+            try
+            {
+                ManagementObject regProvider = new ManagementClass(scope, new ManagementPath("StdRegProv"), null).CreateInstance();
+
+                uint HKLM = 0x80000002;
+                string registryPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+
+                // GetSubKeyNames aufrufen
+                ManagementBaseObject inParams = regProvider.GetMethodParameters("EnumKey");
+                inParams["hDefKey"] = HKLM;
+                inParams["sSubKeyName"] = registryPath;
+
+                ManagementBaseObject outParams = regProvider.InvokeMethod("EnumKey", inParams, null);
+
+                if (outParams != null && outParams["sNames"] is string[] subkeys)
+                {
+                    foreach (string subkey in subkeys)
+                    {
+                        try
+                        {
+                            string keyPath = registryPath + "\\" + subkey;
+
+                            // DisplayName auslesen
+                            inParams = regProvider.GetMethodParameters("GetStringValue");
+                            inParams["hDefKey"] = HKLM;
+                            inParams["sSubKeyName"] = keyPath;
+                            inParams["sValueName"] = "DisplayName";
+
+                            outParams = regProvider.InvokeMethod("GetStringValue", inParams, null);
+                            string name = outParams["sValue"]?.ToString();
+
+                            if (string.IsNullOrEmpty(name) || name.Contains("Update") || name.Contains("Hotfix"))
+                                continue;
+
+                            // Version auslesen
+                            inParams = regProvider.GetMethodParameters("GetStringValue");
+                            inParams["hDefKey"] = HKLM;
+                            inParams["sSubKeyName"] = keyPath;
+                            inParams["sValueName"] = "DisplayVersion";
+                            outParams = regProvider.InvokeMethod("GetStringValue", inParams, null);
+                            string version = outParams["sValue"]?.ToString() ?? "N/A";
+
+                            software.Add(new SoftwareInfo
+                            {
+                                Name = name,
+                                Version = version,
+                                Publisher = "",
+                                InstallLocation = "",
+                                Source = "Remote Registry",
+                                InstallDate = ""
+                            });
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Remote Registry Fehler: {ex.Message}", "Fehler");
+            }
+
+            return software;
         }
 
         private void GetRemoteHardwareInfo(string computerIP, string username, string password)
@@ -1405,6 +1694,344 @@ namespace NmapInventory
             };
 
             return paths.FirstOrDefault(File.Exists);
+        }
+
+        private void SoftwareGridView_CellClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex == softwareGridView.Columns.Count - 1)
+            {
+                string softwareName = softwareGridView.Rows[e.RowIndex].Cells["Name"].Value?.ToString();
+
+                if (!string.IsNullOrEmpty(softwareName))
+                {
+                    if (string.IsNullOrEmpty(currentRemotePC))
+                    {
+                        // Lokales Update
+                        UpdateLocalSoftware(softwareName);
+                    }
+                    else
+                    {
+                        // Remote Update
+                        UpdateRemoteSoftware(currentRemotePC, softwareName);
+                    }
+                }
+            }
+        }
+
+        private void UpdateLocalSoftware(string softwareName)
+        {
+            statusLabel.Text = $"Update wird gestartet: {softwareName}...";
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = $"-Command \"winget upgrade --id '{softwareName}' --accept-source-agreements --accept-package-agreements\"",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using (Process p = Process.Start(psi))
+                    {
+                        string output = p.StandardOutput.ReadToEnd();
+                        string error = p.StandardError.ReadToEnd();
+                        p.WaitForExit();
+
+                        Invoke(new MethodInvoker(() =>
+                        {
+                            if (p.ExitCode == 0)
+                            {
+                                MessageBox.Show($"✓ {softwareName} erfolgreich aktualisiert!", "Erfolg");
+                                statusLabel.Text = "Update abgeschlossen";
+                            }
+                            else
+                            {
+                                MessageBox.Show($"✗ Update fehlgeschlagen:\n{error}", "Fehler");
+                                statusLabel.Text = "Update fehlgeschlagen";
+                            }
+                        }));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        MessageBox.Show($"Fehler: {ex.Message}", "Fehler");
+                        statusLabel.Text = "Fehler beim Update";
+                    }));
+                }
+            });
+        }
+
+        private void UpdateRemoteSoftware(string computerIP, string softwareName)
+        {
+            statusLabel.Text = $"Remote Update wird gestartet: {softwareName}...";
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    string psCommand = $@"
+$session = New-PSSession -ComputerName {computerIP} -ErrorAction Stop
+Invoke-Command -Session $session -ScriptBlock {{
+    winget upgrade --id '{softwareName}' --accept-source-agreements --accept-package-agreements
+}}
+Remove-PSSession -Session $session
+";
+
+                    ProcessStartInfo psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = $"-Command \"{psCommand}\"",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using (Process p = Process.Start(psi))
+                    {
+                        string output = p.StandardOutput.ReadToEnd();
+                        string error = p.StandardError.ReadToEnd();
+                        p.WaitForExit();
+
+                        Invoke(new MethodInvoker(() =>
+                        {
+                            if (p.ExitCode == 0)
+                            {
+                                MessageBox.Show($"✓ {softwareName} auf {computerIP} erfolgreich aktualisiert!", "Erfolg");
+                                statusLabel.Text = "Remote Update abgeschlossen";
+                            }
+                            else
+                            {
+                                MessageBox.Show($"✗ Remote Update fehlgeschlagen:\n{error}", "Fehler");
+                                statusLabel.Text = "Remote Update fehlgeschlagen";
+                            }
+                        }));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        MessageBox.Show($"Fehler: {ex.Message}", "Fehler");
+                        statusLabel.Text = "Fehler beim Remote Update";
+                    }));
+                }
+            });
+        }
+
+        private List<SoftwareInfo> GetPowerShellSoftwareList(string computerIP = null, string username = null, string password = null)
+        {
+            List<SoftwareInfo> software = new List<SoftwareInfo>();
+
+            try
+            {
+                string psCommand = @"
+$software = @()
+$items = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue
+$items += Get-ItemProperty HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue
+$items += Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue
+
+$items | Where-Object {$_.DisplayName -ne $null} | ForEach-Object {
+    if (-not ($_.DisplayName -match 'Update|Hotfix|^KB')) {
+        $obj = @{
+            Name = $_.DisplayName
+            Version = $_.DisplayVersion
+            Publisher = $_.Publisher
+            InstallLocation = $_.InstallLocation
+            InstallDate = if ($_.InstallDate) { [datetime]::ParseExact($_.InstallDate, 'yyyyMMdd', $null).ToString('dd.MM.yyyy') } else { '' }
+        }
+        $software += $obj
+    }
+}
+
+$software | ConvertTo-Json
+";
+
+                if (!string.IsNullOrEmpty(computerIP))
+                {
+                    // Mit Passwort
+                    if (!string.IsNullOrEmpty(password))
+                    {
+                        psCommand = $@"
+$secPassword = ConvertTo-SecureString '{password.Replace("'", "''")}' -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential ('{username}', $secPassword)
+$session = New-PSSession -ComputerName {computerIP} -Credential $cred -ErrorAction Stop
+`$result = Invoke-Command -Session `$session -ScriptBlock {{
+{psCommand}
+}}
+Remove-PSSession -Session `$session
+`$result
+";
+                    }
+                    else
+                    {
+                        // OHNE Credentials - nutze aktuellen User
+                        psCommand = $@"
+$session = New-PSSession -ComputerName {computerIP} -ErrorAction Stop
+`$result = Invoke-Command -Session `$session -ScriptBlock {{
+{psCommand}
+}}
+Remove-PSSession -Session `$session
+`$result
+";
+                    }
+                }
+
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-NoProfile -Command \"{psCommand}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (Process p = Process.Start(psi))
+                {
+                    string output = p.StandardOutput.ReadToEnd();
+                    string error = p.StandardError.ReadToEnd();
+                    p.WaitForExit();
+
+                    if (!string.IsNullOrEmpty(output))
+                    {
+                        try
+                        {
+                            software = JsonConvert.DeserializeObject<List<SoftwareInfo>>(output) ?? new List<SoftwareInfo>();
+                        }
+                        catch
+                        {
+                            software = new List<SoftwareInfo>();
+                        }
+                    }
+
+                    if (p.ExitCode != 0 && !string.IsNullOrEmpty(error))
+                    {
+                        MessageBox.Show($"PowerShell Fehler:\n{error}", "Fehler");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"PowerShell Fehler: {ex.Message}", "Fehler");
+            }
+
+            return software;
+        }
+
+        private void DisplaySoftwareInGrid(List<SoftwareInfo> software, string remotePC = "")
+        {
+            currentRemotePC = remotePC;
+            softwareGridView.Rows.Clear();
+
+            foreach (var sw in software.OrderBy(s => s.Name))
+            {
+                softwareGridView.Rows.Add(
+                    sw.Name,
+                    sw.Version ?? "N/A",
+                    sw.Publisher ?? "",
+                    sw.InstallDate ?? "",
+                    "Update"
+                );
+            }
+
+            statusLabel.Text = $"Software geladen: {software.Count} Programme";
+        }
+
+        private List<SoftwareInfo> GetWingetInstalledSoftware()
+        {
+            List<SoftwareInfo> software = new List<SoftwareInfo>();
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "winget",
+                    Arguments = "list --accept-source-agreements",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (Process p = Process.Start(psi))
+                {
+                    string output = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit();
+
+                    string[] lines = output.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+
+                    // Überspringe Header und leere Zeilen
+                    for (int i = 1; i < lines.Length; i++)
+                    {
+                        string line = lines[i].Trim();
+                        if (string.IsNullOrEmpty(line)) continue;
+
+                        // Format: Name Version ID Source
+                        string[] parts = line.Split(new[] { "  " }, StringSplitOptions.RemoveEmptyEntries);
+
+                        if (parts.Length >= 3)
+                        {
+                            string name = parts[0].Trim();
+                            string version = parts[1].Trim();
+                            string source = parts.Length > 3 ? parts[3].Trim() : "winget";
+
+                            software.Add(new SoftwareInfo
+                            {
+                                Name = name,
+                                Version = version,
+                                Publisher = "",
+                                InstallLocation = "",
+                                Source = source,
+                                InstallDate = ""
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Fehler bei winget Abfrage: " + ex.Message);
+            }
+
+            return software;
+        }
+
+        private async Task<List<SoftwareInfo>> GetRemoteSoftwareViaApi(string computerIP)
+        {
+            List<SoftwareInfo> software = new List<SoftwareInfo>();
+
+            try
+            {
+                using (HttpClient client = new HttpClient())
+                {
+                    client.Timeout = TimeSpan.FromSeconds(30);
+                    string url = $"http://{computerIP}:5000/api/software";
+
+                    HttpResponseMessage response = await client.GetAsync(url);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string json = await response.Content.ReadAsStringAsync();
+                        software = JsonConvert.DeserializeObject<List<SoftwareInfo>>(json) ?? new List<SoftwareInfo>();
+                    }
+                    else
+                    {
+                        MessageBox.Show($"API Fehler: {response.StatusCode}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Fehler bei Remote API Abfrage: " + ex.Message);
+            }
+
+            return software;
         }
 
         public class SoftwareInfo
