@@ -86,18 +86,75 @@ namespace NmapInventory
             tabControl.TabPages.Add(new TabPage("Nmap Ausgabe") { Controls = { rawOutputTextBox } });
 
             // Hardware Tab
+            Panel hardwareInfoPanel = new Panel { Dock = DockStyle.Top, Height = 35, BackColor = Color.LightSteelBlue };
+            var hardwarePCLabel = new Label
+            {
+                Name = "hardwarePCLabel",
+                Text = "Lokaler PC: " + Environment.MachineName,
+                Location = new Point(10, 8),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                ForeColor = Color.DarkBlue
+            };
+            var hardwareUpdateLabel = new Label
+            {
+                Name = "hardwareUpdateLabel",
+                Text = "Letzte Aktualisierung: -",
+                Location = new Point(400, 8),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+            hardwareInfoPanel.Controls.AddRange(new Control[] { hardwarePCLabel, hardwareUpdateLabel });
+
             hardwareInfoTextBox = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, Font = new Font("Consolas", 9), ReadOnly = true };
-            tabControl.TabPages.Add(new TabPage("Hardware") { Controls = { hardwareInfoTextBox } });
+
+            var hardwareContainer = new Panel { Dock = DockStyle.Fill };
+            hardwareContainer.Controls.Add(hardwareInfoTextBox);
+            hardwareContainer.Controls.Add(hardwareInfoPanel);
+
+            var hardwareTabPage = new TabPage("Hardware") { Controls = { hardwareContainer } };
+            hardwareTabPage.Name = "Hardware";
+            tabControl.TabPages.Add(hardwareTabPage);
 
             // Software Tab
+            Panel softwareInfoPanel = new Panel { Dock = DockStyle.Top, Height = 35, BackColor = Color.LightSteelBlue };
+            var softwarePCLabel = new Label
+            {
+                Name = "softwarePCLabel",
+                Text = "Lokaler PC: " + Environment.MachineName,
+                Location = new Point(10, 8),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                ForeColor = Color.DarkBlue
+            };
+            var softwareUpdateLabel = new Label
+            {
+                Name = "softwareUpdateLabel",
+                Text = "Letzte Aktualisierung: -",
+                Location = new Point(400, 8),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+            softwareInfoPanel.Controls.AddRange(new Control[] { softwarePCLabel, softwareUpdateLabel });
+
             softwareGridView = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both };
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Software", Width = 250, ReadOnly = true });
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", Width = 100, ReadOnly = true });
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", Width = 150, ReadOnly = true });
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Installiert", Width = 120, ReadOnly = true });
+            softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Letztes Update", Width = 140, ReadOnly = true });
             softwareGridView.Columns.Add(new DataGridViewButtonColumn { HeaderText = "Aktion", Text = "Update", Width = 80, UseColumnTextForButtonValue = true });
             softwareGridView.CellClick += (s, e) => OnSoftwareUpdateClick(e);
-            tabControl.TabPages.Add(new TabPage("Software") { Controls = { softwareGridView } });
+
+            var softwareContainer = new Panel { Dock = DockStyle.Fill };
+            softwareContainer.Controls.Add(softwareGridView);
+            softwareContainer.Controls.Add(softwareInfoPanel);
+
+            var softwareTabPage = new TabPage("Software") { Controls = { softwareContainer } };
+            softwareTabPage.Name = "Software";
+            tabControl.TabPages.Add(softwareTabPage);
 
             // DB Geräte
             Panel dbDevicePanel = new Panel { Dock = DockStyle.Top, Height = 50 };
@@ -138,10 +195,12 @@ namespace NmapInventory
 
             dbSoftwareTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both };
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Zeitstempel", Width = 150 });
+            dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "PC Name/IP", Width = 150 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Name", Width = 200 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", Width = 100 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", Width = 150 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Installiert am", Width = 120 });
+            dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Letztes Update", Width = 140 });
 
             var dbSoftwareContainer = new Panel { Dock = DockStyle.Fill };
             dbSoftwareContainer.Controls.Add(dbSoftwareTable);
@@ -194,12 +253,23 @@ namespace NmapInventory
             {
                 string hw = hardwareManager.GetHardwareInfo();
                 List<SoftwareInfo> sw = softwareManager.GetInstalledSoftware();
+                // Setze PCName für lokale Software
+                string pcName = Environment.MachineName;
+                foreach (var software in sw)
+                {
+                    software.PCName = pcName;
+                    software.Timestamp = DateTime.Now;
+                }
+                // Prüfe auf Updates
+                dbManager.CheckForUpdates(sw, pcName);
+
                 Invoke(new MethodInvoker(() =>
                 {
                     hardwareInfoTextBox.Text = hw;
                     currentSoftware = sw;
                     DisplaySoftwareGrid(sw);
                     dbManager.SaveSoftware(sw);
+                    UpdateHardwareLabels(pcName, false);
                     statusLabel.Text = "Fertig";
                     hardwareButton.Enabled = true;
                 }));
@@ -220,11 +290,22 @@ namespace NmapInventory
                         {
                             string hw = hardwareManager.GetRemoteHardwareInfo(form.ComputerIP, form.Username, form.Password);
                             List<SoftwareInfo> sw = softwareManager.GetRemoteSoftware(form.ComputerIP, form.Username, form.Password);
+                            // Setze PCName für Remote-Software
+                            string pcName = form.ComputerIP;
+                            foreach (var software in sw)
+                            {
+                                software.PCName = pcName;
+                                software.Timestamp = DateTime.Now;
+                            }
+                            // Prüfe auf Updates
+                            dbManager.CheckForUpdates(sw, pcName);
+
                             Invoke(new MethodInvoker(() =>
                             {
                                 hardwareInfoTextBox.Text = hw;
-                                DisplaySoftwareGrid(sw, form.ComputerIP);
+                                DisplaySoftwareGrid(sw, pcName);
                                 dbManager.SaveSoftware(sw);
+                                UpdateHardwareLabels(pcName, true);
                                 statusLabel.Text = "Remote Abfrage abgeschlossen";
                                 remoteHardwareButton.Enabled = true;
                             }));
@@ -254,8 +335,44 @@ namespace NmapInventory
         {
             currentRemotePC = remotePC;
             softwareGridView.Rows.Clear();
+
+            // Finde die Labels im Software-Tab und aktualisiere sie
+            var softwareTab = tabControl.TabPages["Software"];
+            if (softwareTab != null)
+            {
+                var container = softwareTab.Controls[0] as Panel;
+                if (container != null)
+                {
+                    var infoPanel = container.Controls.OfType<Panel>().FirstOrDefault();
+                    if (infoPanel != null)
+                    {
+                        var pcLabel = infoPanel.Controls["softwarePCLabel"] as Label;
+                        var updateLabel = infoPanel.Controls["softwareUpdateLabel"] as Label;
+
+                        if (pcLabel != null)
+                        {
+                            if (!string.IsNullOrEmpty(remotePC))
+                            {
+                                pcLabel.Text = $"Remote-PC: {remotePC}";
+                                pcLabel.ForeColor = Color.DarkRed;
+                            }
+                            else
+                            {
+                                pcLabel.Text = $"Lokaler PC: {Environment.MachineName}";
+                                pcLabel.ForeColor = Color.DarkBlue;
+                            }
+                        }
+
+                        if (updateLabel != null)
+                        {
+                            updateLabel.Text = $"Letzte Aktualisierung: {DateTime.Now:dd.MM.yyyy HH:mm:ss}";
+                        }
+                    }
+                }
+            }
+
             foreach (var sw in software.OrderBy(s => s.Name))
-                softwareGridView.Rows.Add(sw.Name, sw.Version ?? "N/A", sw.Publisher ?? "", sw.InstallDate ?? "", "Update");
+                softwareGridView.Rows.Add(sw.Name, sw.Version ?? "N/A", sw.Publisher ?? "", sw.InstallDate ?? "", sw.LastUpdate ?? "-", "Update");
         }
 
         private void LoadDatabaseDevices(string filter = "Alle")
@@ -271,7 +388,7 @@ namespace NmapInventory
             dbSoftwareTable.Rows.Clear();
             var software = dbManager.LoadSoftware(filter);
             foreach (var sw in software)
-                dbSoftwareTable.Rows.Add(sw.Zeitstempel, sw.Name, sw.Version, sw.Publisher, sw.InstallDate);
+                dbSoftwareTable.Rows.Add(sw.Zeitstempel, sw.PCName, sw.Name, sw.Version, sw.Publisher, sw.InstallDate, sw.LastUpdate);
         }
 
         private void ExportData()
@@ -287,6 +404,43 @@ namespace NmapInventory
                         MessageBox.Show("Daten exportiert!", "Erfolg");
                     }
                     catch (Exception ex) { MessageBox.Show($"Fehler: {ex.Message}"); }
+                }
+            }
+        }
+
+        private void UpdateHardwareLabels(string pcName, bool isRemote)
+        {
+            var hardwareTab = tabControl.TabPages["Hardware"];
+            if (hardwareTab != null)
+            {
+                var container = hardwareTab.Controls[0] as Panel;
+                if (container != null)
+                {
+                    var infoPanel = container.Controls.OfType<Panel>().FirstOrDefault();
+                    if (infoPanel != null)
+                    {
+                        var pcLabel = infoPanel.Controls["hardwarePCLabel"] as Label;
+                        var updateLabel = infoPanel.Controls["hardwareUpdateLabel"] as Label;
+
+                        if (pcLabel != null)
+                        {
+                            if (isRemote)
+                            {
+                                pcLabel.Text = $"Remote-PC: {pcName}";
+                                pcLabel.ForeColor = Color.DarkRed;
+                            }
+                            else
+                            {
+                                pcLabel.Text = $"Lokaler PC: {pcName}";
+                                pcLabel.ForeColor = Color.DarkBlue;
+                            }
+                        }
+
+                        if (updateLabel != null)
+                        {
+                            updateLabel.Text = $"Letzte Aktualisierung: {DateTime.Now:dd.MM.yyyy HH:mm:ss}";
+                        }
+                    }
                 }
             }
         }
@@ -320,6 +474,9 @@ namespace NmapInventory
         public string InstallLocation { get; set; }
         public string Source { get; set; }
         public string InstallDate { get; set; }
+        public string PCName { get; set; }
+        public DateTime Timestamp { get; set; }
+        public string LastUpdate { get; set; }
     }
 
     public class NmapScanResult
@@ -344,6 +501,8 @@ namespace NmapInventory
         public string Version { get; set; }
         public string Publisher { get; set; }
         public string InstallDate { get; set; }
+        public string PCName { get; set; }
+        public string LastUpdate { get; set; }
     }
 
     // ===== MANAGER CLASSES =====
@@ -687,8 +846,24 @@ namespace NmapInventory
             {
                 conn.Open();
                 string createTableQuery = @"CREATE TABLE IF NOT EXISTS Geraete (ID INTEGER PRIMARY KEY, Zeitstempel DATETIME DEFAULT CURRENT_TIMESTAMP, IP TEXT, Hostname TEXT, Status TEXT, Ports TEXT);
-                CREATE TABLE IF NOT EXISTS Software (ID INTEGER PRIMARY KEY, Zeitstempel DATETIME DEFAULT CURRENT_TIMESTAMP, Name TEXT, Version TEXT, Publisher TEXT, InstallLocation TEXT, Source TEXT, InstallDate TEXT);";
+                CREATE TABLE IF NOT EXISTS Software (ID INTEGER PRIMARY KEY, Zeitstempel DATETIME DEFAULT CURRENT_TIMESTAMP, Name TEXT, Version TEXT, Publisher TEXT, InstallLocation TEXT, Source TEXT, InstallDate TEXT, PCName TEXT, LastUpdate TEXT);";
                 using (var cmd = new SQLiteCommand(createTableQuery, conn)) cmd.ExecuteNonQuery();
+
+                // Prüfe ob PCName-Spalte existiert, falls nicht, füge sie hinzu (für bestehende Datenbanken)
+                try
+                {
+                    using (var cmd = new SQLiteCommand("ALTER TABLE Software ADD COLUMN PCName TEXT", conn))
+                        cmd.ExecuteNonQuery();
+                }
+                catch { /* Spalte existiert bereits */ }
+
+                // Prüfe ob LastUpdate-Spalte existiert, falls nicht, füge sie hinzu
+                try
+                {
+                    using (var cmd = new SQLiteCommand("ALTER TABLE Software ADD COLUMN LastUpdate TEXT", conn))
+                        cmd.ExecuteNonQuery();
+                }
+                catch { /* Spalte existiert bereits */ }
             }
         }
 
@@ -715,7 +890,7 @@ namespace NmapInventory
             {
                 conn.Open();
                 foreach (var sw in software)
-                    using (var cmd = new SQLiteCommand("INSERT INTO Software (Name, Version, Publisher, InstallLocation, Source, InstallDate) VALUES (@Name, @Version, @Publisher, @InstallLocation, @Source, @InstallDate)", conn))
+                    using (var cmd = new SQLiteCommand("INSERT INTO Software (Name, Version, Publisher, InstallLocation, Source, InstallDate, PCName, LastUpdate) VALUES (@Name, @Version, @Publisher, @InstallLocation, @Source, @InstallDate, @PCName, @LastUpdate)", conn))
                     {
                         cmd.Parameters.AddWithValue("@Name", sw.Name);
                         cmd.Parameters.AddWithValue("@Version", sw.Version ?? "");
@@ -723,8 +898,58 @@ namespace NmapInventory
                         cmd.Parameters.AddWithValue("@InstallLocation", sw.InstallLocation ?? "");
                         cmd.Parameters.AddWithValue("@Source", sw.Source ?? "");
                         cmd.Parameters.AddWithValue("@InstallDate", sw.InstallDate ?? "");
+                        cmd.Parameters.AddWithValue("@PCName", sw.PCName ?? "");
+                        cmd.Parameters.AddWithValue("@LastUpdate", sw.LastUpdate ?? "");
                         cmd.ExecuteNonQuery();
                     }
+            }
+        }
+
+        public void CheckForUpdates(List<SoftwareInfo> softwareList, string pcName)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                foreach (var sw in softwareList)
+                {
+                    // Hole die letzte Version dieser Software für diesen PC
+                    string query = "SELECT Version, Zeitstempel FROM Software WHERE Name = @Name AND PCName = @PCName ORDER BY Zeitstempel DESC LIMIT 1";
+                    using (var cmd = new SQLiteCommand(query, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@Name", sw.Name);
+                        cmd.Parameters.AddWithValue("@PCName", pcName);
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            if (reader.Read())
+                            {
+                                string oldVersion = reader["Version"]?.ToString();
+                                string lastTimestamp = reader["Zeitstempel"]?.ToString();
+
+                                // Vergleiche Versionen
+                                if (!string.IsNullOrEmpty(oldVersion) && oldVersion != sw.Version)
+                                {
+                                    // Version hat sich geändert - Update erkannt!
+                                    sw.LastUpdate = DateTime.Now.ToString("dd.MM.yyyy HH:mm");
+                                }
+                                else if (!string.IsNullOrEmpty(lastTimestamp))
+                                {
+                                    // Gleiche Version - nutze letzten Zeitstempel
+                                    sw.LastUpdate = lastTimestamp;
+                                }
+                                else
+                                {
+                                    sw.LastUpdate = "-";
+                                }
+                            }
+                            else
+                            {
+                                // Erste Erfassung dieser Software
+                                sw.LastUpdate = "Neu erfasst";
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -758,7 +983,7 @@ namespace NmapInventory
             {
                 conn.Open();
                 string whereClause = GetDateFilter(filter);
-                string query = $"SELECT Zeitstempel, Name, Version, Publisher, InstallDate FROM Software {whereClause} ORDER BY Zeitstempel DESC LIMIT 100";
+                string query = $"SELECT Zeitstempel, Name, Version, Publisher, InstallDate, PCName, LastUpdate FROM Software {whereClause} ORDER BY Zeitstempel DESC LIMIT 100";
                 using (var cmd = new SQLiteCommand(query, conn))
                 using (var reader = cmd.ExecuteReader())
                     while (reader.Read())
@@ -768,7 +993,9 @@ namespace NmapInventory
                             Name = reader["Name"].ToString(),
                             Version = reader["Version"].ToString(),
                             Publisher = reader["Publisher"].ToString(),
-                            InstallDate = reader["InstallDate"].ToString()
+                            InstallDate = reader["InstallDate"].ToString(),
+                            PCName = reader["PCName"].ToString(),
+                            LastUpdate = reader["LastUpdate"].ToString()
                         });
             }
             return software;
