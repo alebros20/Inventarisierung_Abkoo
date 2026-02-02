@@ -218,12 +218,13 @@ namespace NmapInventory
                     {
                         try
                         {
-                            string hw = hardwareManager.GetRemoteHardwareInfo(form.ComputerIP);
-                            List<SoftwareInfo> sw = softwareManager.GetRemoteSoftware(form.ComputerIP);
+                            string hw = hardwareManager.GetRemoteHardwareInfo(form.ComputerIP, form.Username, form.Password);
+                            List<SoftwareInfo> sw = softwareManager.GetRemoteSoftware(form.ComputerIP, form.Username, form.Password);
                             Invoke(new MethodInvoker(() =>
                             {
                                 hardwareInfoTextBox.Text = hw;
                                 DisplaySoftwareGrid(sw, form.ComputerIP);
+                                dbManager.SaveSoftware(sw);
                                 statusLabel.Text = "Remote Abfrage abgeschlossen";
                                 remoteHardwareButton.Enabled = true;
                             }));
@@ -437,23 +438,86 @@ namespace NmapInventory
             return sb.ToString();
         }
 
-        public string GetRemoteHardwareInfo(string computerIP)
+        public string GetRemoteHardwareInfo(string computerIP, string username, string password)
         {
             var sb = new StringBuilder();
             sb.AppendLine($"=== REMOTE HARDWARE: {computerIP} ===\n");
             try
             {
-                var scope = new ManagementScope($@"\\{computerIP}\root\cimv2", new ConnectionOptions { Authentication = AuthenticationLevel.PacketPrivacy, Timeout = TimeSpan.FromSeconds(30) });
+                var options = new ConnectionOptions
+                {
+                    Authentication = AuthenticationLevel.PacketPrivacy,
+                    Timeout = TimeSpan.FromSeconds(30)
+                };
+
+                // Nur Username/Password setzen wenn sie angegeben wurden
+                if (!string.IsNullOrEmpty(username))
+                {
+                    options.Username = username;
+                    options.Password = password;
+                }
+
+                var scope = new ManagementScope($@"\\{computerIP}\root\cimv2", options);
                 scope.Connect();
+
                 sb.AppendLine("=== BETRIEBSSYSTEM ===");
-                var searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Caption, Version FROM Win32_OperatingSystem"));
-                foreach (ManagementObject obj in searcher.Get())
+                var osSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Caption, Version, OSArchitecture FROM Win32_OperatingSystem"));
+                foreach (ManagementObject obj in osSearcher.Get())
                 {
                     sb.AppendLine("OS: " + obj["Caption"]);
                     sb.AppendLine("Version: " + obj["Version"]);
+                    sb.AppendLine("Architektur: " + obj["OSArchitecture"]);
+                }
+
+                sb.AppendLine("\n=== PROZESSOR ===");
+                var cpuSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Name, MaxClockSpeed, NumberOfCores, NumberOfLogicalProcessors FROM Win32_Processor"));
+                foreach (ManagementObject obj in cpuSearcher.Get())
+                {
+                    sb.AppendLine("Name: " + obj["Name"]);
+                    sb.AppendLine("Taktfrequenz: " + obj["MaxClockSpeed"] + " MHz");
+                    sb.AppendLine("Kerne: " + obj["NumberOfCores"]);
+                    sb.AppendLine("Logische Prozessoren: " + obj["NumberOfLogicalProcessors"]);
+                }
+
+                sb.AppendLine("\n=== ARBEITSSPEICHER ===");
+                var memSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM Win32_OperatingSystem"));
+                foreach (ManagementObject obj in memSearcher.Get())
+                {
+                    long totalMB = Convert.ToInt64(obj["TotalVisibleMemorySize"]) / 1024;
+                    long freeMB = Convert.ToInt64(obj["FreePhysicalMemory"]) / 1024;
+                    sb.AppendLine($"Gesamt: {totalMB} MB");
+                    sb.AppendLine($"Frei: {freeMB} MB");
+                    sb.AppendLine($"Belegt: {totalMB - freeMB} MB");
+                }
+
+                sb.AppendLine("\n=== FESTPLATTEN ===");
+                var diskSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT DeviceID, Size, FreeSpace, VolumeName FROM Win32_LogicalDisk WHERE DriveType=3"));
+                foreach (ManagementObject obj in diskSearcher.Get())
+                {
+                    string deviceID = obj["DeviceID"]?.ToString();
+                    string volumeName = obj["VolumeName"]?.ToString();
+                    long sizeGB = Convert.ToInt64(obj["Size"]) / (1024 * 1024 * 1024);
+                    long freeGB = Convert.ToInt64(obj["FreeSpace"]) / (1024 * 1024 * 1024);
+                    sb.AppendLine($"\nLaufwerk: {deviceID} ({volumeName})");
+                    sb.AppendLine($"  Größe: {sizeGB} GB");
+                    sb.AppendLine($"  Frei: {freeGB} GB");
+                    sb.AppendLine($"  Belegt: {sizeGB - freeGB} GB");
+                }
+
+                sb.AppendLine("\n=== NETZWERKADAPTER ===");
+                var netSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Description, MACAddress, IPEnabled FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=True"));
+                foreach (ManagementObject obj in netSearcher.Get())
+                {
+                    sb.AppendLine("Adapter: " + obj["Description"]);
+                    sb.AppendLine("MAC: " + obj["MACAddress"]);
                 }
             }
-            catch (Exception ex) { sb.AppendLine("Fehler: " + ex.Message); }
+            catch (Exception ex)
+            {
+                sb.AppendLine("\nFehler: " + ex.Message);
+                if (ex.InnerException != null)
+                    sb.AppendLine("Details: " + ex.InnerException.Message);
+            }
             return sb.ToString();
         }
     }
@@ -467,7 +531,109 @@ namespace NmapInventory
             return software.Values.ToList();
         }
 
-        public List<SoftwareInfo> GetRemoteSoftware(string computerIP) => new List<SoftwareInfo>();
+        public List<SoftwareInfo> GetRemoteSoftware(string computerIP, string username, string password)
+        {
+            var software = new Dictionary<string, SoftwareInfo>();
+            try
+            {
+                // Verwende Registry-Abfrage statt Win32_Product (schneller und zuverlässiger)
+                var options = new ConnectionOptions
+                {
+                    Authentication = AuthenticationLevel.PacketPrivacy,
+                    Timeout = TimeSpan.FromSeconds(60)
+                };
+
+                if (!string.IsNullOrEmpty(username))
+                {
+                    options.Username = username;
+                    options.Password = password;
+                }
+
+                var scope = new ManagementScope($@"\\{computerIP}\root\default", options);
+                scope.Connect();
+
+                // Registry über WMI abfragen
+                var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+
+                // Beide Registry-Pfade durchsuchen
+                string[] regPaths = new string[]
+                {
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                    @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+                };
+
+                foreach (string regPath in regPaths)
+                {
+                    // Subkeys auflisten
+                    ManagementBaseObject inParams = registry.GetMethodParameters("EnumKey");
+                    inParams["hDefKey"] = 0x80000002; // HKEY_LOCAL_MACHINE
+                    inParams["sSubKeyName"] = regPath;
+
+                    ManagementBaseObject outParams = registry.InvokeMethod("EnumKey", inParams, null);
+                    if (outParams["sNames"] != null)
+                    {
+                        string[] subkeys = (string[])outParams["sNames"];
+
+                        foreach (string subkey in subkeys)
+                        {
+                            string fullPath = regPath + @"\" + subkey;
+
+                            // DisplayName auslesen
+                            string displayName = GetRegistryValue(registry, fullPath, "DisplayName");
+                            if (string.IsNullOrEmpty(displayName) || displayName.Contains("Update")) continue;
+
+                            string version = GetRegistryValue(registry, fullPath, "DisplayVersion") ?? "N/A";
+                            string publisher = GetRegistryValue(registry, fullPath, "Publisher") ?? "";
+                            string installDate = GetRegistryValue(registry, fullPath, "InstallDate") ?? "";
+
+                            // Datum formatieren (von YYYYMMDD zu DD.MM.YYYY)
+                            if (!string.IsNullOrEmpty(installDate) && installDate.Length == 8)
+                            {
+                                installDate = $"{installDate.Substring(6, 2)}.{installDate.Substring(4, 2)}.{installDate.Substring(0, 4)}";
+                            }
+
+                            var uniqueKey = displayName + "|" + version;
+                            if (!software.ContainsKey(uniqueKey))
+                            {
+                                software[uniqueKey] = new SoftwareInfo
+                                {
+                                    Name = displayName,
+                                    Version = version,
+                                    Publisher = publisher,
+                                    InstallDate = installDate,
+                                    Source = "Remote Registry"
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Abrufen der Remote-Software:\n{ex.Message}\n\nTipp: Stelle sicher, dass:\n1. WMI auf dem Remote-PC aktiviert ist\n2. Die Firewall WMI-Zugriff erlaubt\n3. Du Administrator-Rechte hast", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+
+            return software.Values.ToList();
+        }
+
+        private string GetRegistryValue(ManagementClass registry, string keyPath, string valueName)
+        {
+            try
+            {
+                ManagementBaseObject inParams = registry.GetMethodParameters("GetStringValue");
+                inParams["hDefKey"] = 0x80000002; // HKEY_LOCAL_MACHINE
+                inParams["sSubKeyName"] = keyPath;
+                inParams["sValueName"] = valueName;
+
+                ManagementBaseObject outParams = registry.InvokeMethod("GetStringValue", inParams, null);
+                if (outParams["sValue"] != null)
+                {
+                    return outParams["sValue"].ToString();
+                }
+            }
+            catch { }
+            return null;
+        }
 
         public void UpdateSoftware(string softwareName, string remotePC, Label statusLabel)
         {
