@@ -685,17 +685,152 @@ namespace NmapInventory
     {
         public List<SoftwareInfo> GetInstalledSoftware()
         {
-            var software = new Dictionary<string, SoftwareInfo>();
-            ReadRegistry(Registry.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", software);
-            return software.Values.ToList();
+            var software = new List<SoftwareInfo>();
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = "-Command \"winget list --accept-source-agreements | Out-String\"",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (var process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit();
+
+                    software = ParseWingetOutput(output);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler bei winget list: {ex.Message}\n\nFallback auf Registry...", "Warnung");
+                // Fallback auf Registry-Methode
+                var fallbackSoftware = new Dictionary<string, SoftwareInfo>();
+                ReadRegistry(Registry.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", fallbackSoftware);
+                ReadRegistry(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", fallbackSoftware);
+                return fallbackSoftware.Values.ToList();
+            }
+
+            return software;
+        }
+
+        private List<SoftwareInfo> ParseWingetOutput(string output)
+        {
+            var software = new List<SoftwareInfo>();
+            var lines = output.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+
+            bool dataStarted = false;
+            foreach (var line in lines)
+            {
+                // Überspringe Header-Zeilen bis zur Trennlinie
+                if (line.Contains("---"))
+                {
+                    dataStarted = true;
+                    continue;
+                }
+
+                if (!dataStarted || line.Trim().Length < 10) continue;
+
+                // Winget-Format: Name   ID   Version   Available   Source
+                // Verwende Regex oder feste Positionen
+                var parts = System.Text.RegularExpressions.Regex.Split(line, @"\s{2,}");
+
+                if (parts.Length >= 3)
+                {
+                    string name = parts[0].Trim();
+                    string id = parts.Length > 1 ? parts[1].Trim() : "";
+                    string version = parts.Length > 2 ? parts[2].Trim() : "";
+                    string available = parts.Length > 3 ? parts[3].Trim() : "";
+
+                    if (string.IsNullOrEmpty(name) || name.StartsWith("Name")) continue;
+
+                    var sw = new SoftwareInfo
+                    {
+                        Name = name,
+                        Version = version,
+                        Publisher = id, // ID als Publisher verwenden
+                        Source = "winget",
+                        InstallDate = ""
+                    };
+
+                    // Wenn verfügbare Version vorhanden und unterschiedlich
+                    if (!string.IsNullOrEmpty(available) && available != version && !available.Contains("<"))
+                    {
+                        sw.LastUpdate = $"Update verfügbar: {available}";
+                    }
+                    else
+                    {
+                        sw.LastUpdate = "Aktuell";
+                    }
+
+                    software.Add(sw);
+                }
+            }
+
+            return software;
         }
 
         public List<SoftwareInfo> GetRemoteSoftware(string computerIP, string username, string password)
         {
+            var software = new List<SoftwareInfo>();
+
+            // Wenn Username/Passwort leer sind, gehe direkt zu WMI (PowerShell Remoting funktioniert nicht ohne Credentials)
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+            {
+                MessageBox.Show("PowerShell Remoting erfordert Benutzername und Passwort.\n\nVerwende WMI Registry-Abfrage...", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return GetRemoteSoftwareViaWMI(computerIP, username, password);
+            }
+
+            try
+            {
+                // Versuche winget über PowerShell Remoting
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $@"-Command ""
+                        $pass = ConvertTo-SecureString '{password}' -AsPlainText -Force
+                        $cred = New-Object System.Management.Automation.PSCredential ('{username}', $pass)
+                        Invoke-Command -ComputerName {computerIP} -Credential $cred -ScriptBlock {{ winget list --accept-source-agreements }} -ErrorAction Stop | Out-String
+                    """,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (var process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    string errors = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+
+                    if (process.ExitCode == 0 && !string.IsNullOrEmpty(output) && output.Contains("Name"))
+                    {
+                        software = ParseWingetOutput(output);
+                        if (software.Count > 0)
+                            return software;
+                    }
+
+                    // Fehler oder keine Daten
+                    throw new Exception($"PowerShell Remoting fehlgeschlagen: {errors}");
+                }
+            }
+            catch (Exception ex)
+            {
+                // Fallback auf Registry über WMI (ohne Fehlermeldung, da dies erwartet wird)
+                return GetRemoteSoftwareViaWMI(computerIP, username, password);
+            }
+        }
+
+        private List<SoftwareInfo> GetRemoteSoftwareViaWMI(string computerIP, string username, string password)
+        {
             var software = new Dictionary<string, SoftwareInfo>();
             try
             {
-                // Verwende Registry-Abfrage statt Win32_Product (schneller und zuverlässiger)
                 var options = new ConnectionOptions
                 {
                     Authentication = AuthenticationLevel.PacketPrivacy,
@@ -711,10 +846,8 @@ namespace NmapInventory
                 var scope = new ManagementScope($@"\\{computerIP}\root\default", options);
                 scope.Connect();
 
-                // Registry über WMI abfragen
                 var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
 
-                // Beide Registry-Pfade durchsuchen
                 string[] regPaths = new string[]
                 {
                     @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -723,9 +856,8 @@ namespace NmapInventory
 
                 foreach (string regPath in regPaths)
                 {
-                    // Subkeys auflisten
                     ManagementBaseObject inParams = registry.GetMethodParameters("EnumKey");
-                    inParams["hDefKey"] = 0x80000002; // HKEY_LOCAL_MACHINE
+                    inParams["hDefKey"] = 0x80000002;
                     inParams["sSubKeyName"] = regPath;
 
                     ManagementBaseObject outParams = registry.InvokeMethod("EnumKey", inParams, null);
@@ -737,7 +869,6 @@ namespace NmapInventory
                         {
                             string fullPath = regPath + @"\" + subkey;
 
-                            // DisplayName auslesen
                             string displayName = GetRegistryValue(registry, fullPath, "DisplayName");
                             if (string.IsNullOrEmpty(displayName) || displayName.Contains("Update")) continue;
 
@@ -745,7 +876,6 @@ namespace NmapInventory
                             string publisher = GetRegistryValue(registry, fullPath, "Publisher") ?? "";
                             string installDate = GetRegistryValue(registry, fullPath, "InstallDate") ?? "";
 
-                            // Datum formatieren (von YYYYMMDD zu DD.MM.YYYY)
                             if (!string.IsNullOrEmpty(installDate) && installDate.Length == 8)
                             {
                                 installDate = $"{installDate.Substring(6, 2)}.{installDate.Substring(4, 2)}.{installDate.Substring(0, 4)}";
@@ -760,7 +890,8 @@ namespace NmapInventory
                                     Version = version,
                                     Publisher = publisher,
                                     InstallDate = installDate,
-                                    Source = "Remote Registry"
+                                    Source = "Remote Registry",
+                                    LastUpdate = "-"
                                 };
                             }
                         }
@@ -827,7 +958,14 @@ namespace NmapInventory
                             var version = sub?.GetValue("DisplayVersion")?.ToString() ?? "N/A";
                             var uniqueKey = name + "|" + version;
                             if (!software.ContainsKey(uniqueKey))
-                                software[uniqueKey] = new SoftwareInfo { Name = name, Version = version, Publisher = sub?.GetValue("Publisher")?.ToString() ?? "", Source = "Registry" };
+                                software[uniqueKey] = new SoftwareInfo
+                                {
+                                    Name = name,
+                                    Version = version,
+                                    Publisher = sub?.GetValue("Publisher")?.ToString() ?? "",
+                                    Source = "Registry",
+                                    LastUpdate = "-"
+                                };
                         }
                     }
                 }
@@ -1046,16 +1184,25 @@ namespace NmapInventory
         {
             Text = "Remote Verbindung";
             Width = 500;
-            Height = 280;
+            Height = 320;
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
 
             var ipTb = new TextBox { Location = new Point(150, 30), Width = 300 };
-            var userTb = new TextBox { Location = new Point(150, 70), Width = 300 };
+            var userTb = new TextBox { Location = new Point(150, 70), Width = 300, Text = Environment.UserName };
             var passTb = new TextBox { Location = new Point(150, 110), Width = 300, UseSystemPasswordChar = true };
 
-            var okBtn = new Button { Text = "Verbinden", Location = new Point(150, 160), Width = 100, DialogResult = DialogResult.OK };
-            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 160), Width = 100, DialogResult = DialogResult.Cancel };
+            var infoLabel = new Label
+            {
+                Text = "Hinweis: Für Remote-Zugriff wird ein Passwort benötigt.\nBei leerem Passwort wird nur WMI Registry verwendet.",
+                Location = new Point(20, 150),
+                Width = 450,
+                Height = 50,
+                ForeColor = Color.DarkBlue
+            };
+
+            var okBtn = new Button { Text = "Verbinden", Location = new Point(150, 210), Width = 100, DialogResult = DialogResult.OK };
+            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 210), Width = 100, DialogResult = DialogResult.Cancel };
 
             Controls.AddRange(new Control[] {
                 new Label { Text = "Computer-IP:", Location = new Point(20, 33), AutoSize = true },
@@ -1064,13 +1211,25 @@ namespace NmapInventory
                 userTb,
                 new Label { Text = "Passwort:", Location = new Point(20, 113), AutoSize = true },
                 passTb,
+                infoLabel,
                 okBtn, cancelBtn
             });
 
             AcceptButton = okBtn;
             CancelButton = cancelBtn;
 
-            okBtn.Click += (s, e) => { ComputerIP = ipTb.Text; Username = userTb.Text; Password = passTb.Text; };
+            okBtn.Click += (s, e) =>
+            {
+                ComputerIP = ipTb.Text.Trim();
+                Username = userTb.Text.Trim();
+                Password = passTb.Text;
+
+                if (string.IsNullOrEmpty(ComputerIP))
+                {
+                    MessageBox.Show("Bitte gib eine Computer-IP ein!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    DialogResult = DialogResult.None;
+                }
+            };
         }
     }
 
