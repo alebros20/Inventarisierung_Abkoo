@@ -43,6 +43,7 @@ namespace NmapInventory
 
             InitializeComponent();
             dbManager.InitializeDatabase();
+            LoadCustomerTree();
         }
 
         private void InitializeComponent()
@@ -163,13 +164,22 @@ namespace NmapInventory
             dbDeviceFilter.SelectedIndex = 0;
             dbDeviceFilter.SelectedIndexChanged += (s, e) => LoadDatabaseDevices(dbDeviceFilter.SelectedItem.ToString());
 
+            var dbDeviceSaveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100 };
+            dbDeviceSaveBtn.Click += (s, e) => SaveDatabaseDevices();
+
+            var dbDeviceDeleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, BackColor = Color.IndianRed };
+            dbDeviceDeleteBtn.Click += (s, e) => DeleteDatabaseDeviceRow();
+
             dbDevicePanel.Controls.AddRange(new Control[] {
                 new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true },
-                dbDeviceFilter
+                dbDeviceFilter,
+                dbDeviceSaveBtn,
+                dbDeviceDeleteBtn
             });
 
-            dbDeviceTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both };
-            dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Zeitstempel", Width = 150 });
+            dbDeviceTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both };
+            dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "ID", Width = 50, ReadOnly = true, Visible = false });
+            dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Zeitstempel", Width = 150, ReadOnly = true });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP", Width = 120 });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hostname", Width = 150 });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", Width = 80 });
@@ -188,13 +198,22 @@ namespace NmapInventory
             dbSoftwareFilter.SelectedIndex = 0;
             dbSoftwareFilter.SelectedIndexChanged += (s, e) => LoadDatabaseSoftware(dbSoftwareFilter.SelectedItem.ToString());
 
+            var dbSoftwareSaveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100 };
+            dbSoftwareSaveBtn.Click += (s, e) => SaveDatabaseSoftware();
+
+            var dbSoftwareDeleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, BackColor = Color.IndianRed };
+            dbSoftwareDeleteBtn.Click += (s, e) => DeleteDatabaseSoftwareRow();
+
             dbSoftwarePanel.Controls.AddRange(new Control[] {
                 new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true },
-                dbSoftwareFilter
+                dbSoftwareFilter,
+                dbSoftwareSaveBtn,
+                dbSoftwareDeleteBtn
             });
 
-            dbSoftwareTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both };
-            dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Zeitstempel", Width = 150 });
+            dbSoftwareTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both };
+            dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "ID", Width = 50, ReadOnly = true, Visible = false });
+            dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Zeitstempel", Width = 150, ReadOnly = true });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "PC Name/IP", Width = 150 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Name", Width = 200 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", Width = 100 });
@@ -207,6 +226,66 @@ namespace NmapInventory
             dbSoftwareContainer.Controls.Add(dbSoftwarePanel);
 
             tabControl.TabPages.Add(new TabPage("DB - Software") { Controls = { dbSoftwareContainer } });
+
+            // Kunden/Standorte Verwaltung Tab
+            var customerLocationTab = new TabPage("Kunden / Standorte");
+
+            // Split Container: Links TreeView, Rechts Details
+            var splitContainer = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 300 };
+
+            // Linke Seite: TreeView
+            Panel leftPanel = new Panel { Dock = DockStyle.Fill };
+            var treeView = new TreeView { Name = "customerTreeView", Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
+            treeView.AfterSelect += (s, e) => OnTreeNodeSelected(e.Node);
+
+            Panel treeButtonPanel = new Panel { Dock = DockStyle.Top, Height = 40 };
+            var addCustomerBtn = new Button { Text = "+ Kunde", Location = new Point(5, 8), Width = 90, BackColor = Color.LightGreen };
+            addCustomerBtn.Click += (s, e) => AddCustomer();
+            var addLocationBtn = new Button { Text = "+ Standort", Location = new Point(100, 8), Width = 90, BackColor = Color.LightBlue };
+            addLocationBtn.Click += (s, e) => AddLocation();
+            var deleteNodeBtn = new Button { Text = "Löschen", Location = new Point(195, 8), Width = 90, BackColor = Color.IndianRed };
+            deleteNodeBtn.Click += (s, e) => DeleteNode();
+            treeButtonPanel.Controls.AddRange(new Control[] { addCustomerBtn, addLocationBtn, deleteNodeBtn });
+
+            leftPanel.Controls.Add(treeView);
+            leftPanel.Controls.Add(treeButtonPanel);
+            splitContainer.Panel1.Controls.Add(leftPanel);
+
+            // Rechte Seite: Details und IP-Zuordnung
+            Panel rightPanel = new Panel { Dock = DockStyle.Fill };
+
+            var detailsLabel = new Label { Name = "detailsLabel", Text = "Details", Location = new Point(10, 10), Font = new Font("Segoe UI", 12, FontStyle.Bold), AutoSize = true };
+
+            var nameLabel = new Label { Text = "Name:", Location = new Point(10, 50), AutoSize = true };
+            var nameTextBox = new TextBox { Name = "nameTextBox", Location = new Point(100, 47), Width = 300 };
+
+            var addressLabel = new Label { Text = "Adresse:", Location = new Point(10, 80), AutoSize = true };
+            var addressTextBox = new TextBox { Name = "addressTextBox", Location = new Point(100, 77), Width = 300, Multiline = true, Height = 60 };
+
+            var saveDetailsBtn = new Button { Text = "Details speichern", Location = new Point(100, 145), Width = 150, BackColor = Color.LightGreen };
+            saveDetailsBtn.Click += (s, e) => SaveNodeDetails();
+
+            // IP-Adressen Zuordnung
+            var ipLabel = new Label { Text = "Zugeordnete IP-Adressen:", Location = new Point(10, 190), Font = new Font("Segoe UI", 10, FontStyle.Bold), AutoSize = true };
+
+            var ipListBox = new ListBox { Name = "ipListBox", Location = new Point(10, 220), Width = 400, Height = 200 };
+
+            var ipInputLabel = new Label { Text = "IP hinzufügen:", Location = new Point(10, 430), AutoSize = true };
+            var ipInputTextBox = new TextBox { Name = "ipInputTextBox", Location = new Point(100, 427), Width = 200 };
+            var addIpBtn = new Button { Text = "IP hinzufügen", Location = new Point(310, 425), Width = 100, BackColor = Color.LightBlue };
+            addIpBtn.Click += (s, e) => AddIPToNode();
+
+            var removeIpBtn = new Button { Text = "IP entfernen", Location = new Point(10, 460), Width = 100, BackColor = Color.IndianRed };
+            removeIpBtn.Click += (s, e) => RemoveIPFromNode();
+
+            rightPanel.Controls.AddRange(new Control[] {
+                detailsLabel, nameLabel, nameTextBox, addressLabel, addressTextBox, saveDetailsBtn,
+                ipLabel, ipListBox, ipInputLabel, ipInputTextBox, addIpBtn, removeIpBtn
+            });
+
+            splitContainer.Panel2.Controls.Add(rightPanel);
+            customerLocationTab.Controls.Add(splitContainer);
+            tabControl.TabPages.Add(customerLocationTab);
 
             statusLabel = new Label { Dock = DockStyle.Bottom, Height = 25, Text = "Bereit", BorderStyle = BorderStyle.FixedSingle };
 
@@ -380,7 +459,7 @@ namespace NmapInventory
             dbDeviceTable.Rows.Clear();
             var devices = dbManager.LoadDevices(filter);
             foreach (var dev in devices)
-                dbDeviceTable.Rows.Add(dev.Zeitstempel, dev.IP, dev.Hostname, dev.Status, dev.Ports);
+                dbDeviceTable.Rows.Add(dev.ID, dev.Zeitstempel, dev.IP, dev.Hostname, dev.Status, dev.Ports);
         }
 
         private void LoadDatabaseSoftware(string filter = "Alle")
@@ -388,7 +467,7 @@ namespace NmapInventory
             dbSoftwareTable.Rows.Clear();
             var software = dbManager.LoadSoftware(filter);
             foreach (var sw in software)
-                dbSoftwareTable.Rows.Add(sw.Zeitstempel, sw.PCName, sw.Name, sw.Version, sw.Publisher, sw.InstallDate, sw.LastUpdate);
+                dbSoftwareTable.Rows.Add(sw.ID, sw.Zeitstempel, sw.PCName, sw.Name, sw.Version, sw.Publisher, sw.InstallDate, sw.LastUpdate);
         }
 
         private void ExportData()
@@ -406,6 +485,144 @@ namespace NmapInventory
                     catch (Exception ex) { MessageBox.Show($"Fehler: {ex.Message}"); }
                 }
             }
+        }
+
+        private void SaveDatabaseDevices()
+        {
+            if (!VerifyPassword("Änderungen speichern"))
+                return;
+
+            try
+            {
+                dbManager.UpdateDevices(GetDevicesFromGrid());
+                MessageBox.Show("Änderungen wurden gespeichert!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                LoadDatabaseDevices();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Speichern: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void DeleteDatabaseDeviceRow()
+        {
+            if (dbDeviceTable.SelectedRows.Count == 0)
+            {
+                MessageBox.Show("Bitte wähle eine Zeile zum Löschen aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!VerifyPassword("Zeile löschen"))
+                return;
+
+            try
+            {
+                var selectedRow = dbDeviceTable.SelectedRows[0];
+                int id = Convert.ToInt32(selectedRow.Cells[0].Value);
+
+                dbManager.DeleteDevice(id);
+                MessageBox.Show("Zeile wurde gelöscht!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                LoadDatabaseDevices();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Löschen: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void SaveDatabaseSoftware()
+        {
+            if (!VerifyPassword("Änderungen speichern"))
+                return;
+
+            try
+            {
+                dbManager.UpdateSoftwareEntries(GetSoftwareFromGrid());
+                MessageBox.Show("Änderungen wurden gespeichert!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                LoadDatabaseSoftware();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Speichern: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void DeleteDatabaseSoftwareRow()
+        {
+            if (dbSoftwareTable.SelectedRows.Count == 0)
+            {
+                MessageBox.Show("Bitte wähle eine Zeile zum Löschen aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!VerifyPassword("Zeile löschen"))
+                return;
+
+            try
+            {
+                var selectedRow = dbSoftwareTable.SelectedRows[0];
+                int id = Convert.ToInt32(selectedRow.Cells[0].Value);
+
+                dbManager.DeleteSoftwareEntry(id);
+                MessageBox.Show("Zeile wurde gelöscht!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                LoadDatabaseSoftware();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Löschen: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private bool VerifyPassword(string action)
+        {
+            using (var passwordForm = new PasswordVerificationForm(action))
+            {
+                return passwordForm.ShowDialog(this) == DialogResult.OK;
+            }
+        }
+
+        private List<DatabaseDevice> GetDevicesFromGrid()
+        {
+            var devices = new List<DatabaseDevice>();
+            foreach (DataGridViewRow row in dbDeviceTable.Rows)
+            {
+                if (row.Cells[0].Value != null)
+                {
+                    devices.Add(new DatabaseDevice
+                    {
+                        ID = Convert.ToInt32(row.Cells[0].Value),
+                        Zeitstempel = row.Cells[1].Value?.ToString(),
+                        IP = row.Cells[2].Value?.ToString(),
+                        Hostname = row.Cells[3].Value?.ToString(),
+                        Status = row.Cells[4].Value?.ToString(),
+                        Ports = row.Cells[5].Value?.ToString()
+                    });
+                }
+            }
+            return devices;
+        }
+
+        private List<DatabaseSoftware> GetSoftwareFromGrid()
+        {
+            var software = new List<DatabaseSoftware>();
+            foreach (DataGridViewRow row in dbSoftwareTable.Rows)
+            {
+                if (row.Cells[0].Value != null)
+                {
+                    software.Add(new DatabaseSoftware
+                    {
+                        ID = Convert.ToInt32(row.Cells[0].Value),
+                        Zeitstempel = row.Cells[1].Value?.ToString(),
+                        PCName = row.Cells[2].Value?.ToString(),
+                        Name = row.Cells[3].Value?.ToString(),
+                        Version = row.Cells[4].Value?.ToString(),
+                        Publisher = row.Cells[5].Value?.ToString(),
+                        InstallDate = row.Cells[6].Value?.ToString(),
+                        LastUpdate = row.Cells[7].Value?.ToString()
+                    });
+                }
+            }
+            return software;
         }
 
         private void UpdateHardwareLabels(string pcName, bool isRemote)
@@ -455,6 +672,249 @@ namespace NmapInventory
             }
         }
 
+        // === KUNDEN/STANDORT VERWALTUNG ===
+
+        private void LoadCustomerTree()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            if (treeView == null) return;
+
+            treeView.Nodes.Clear();
+            var customers = dbManager.GetCustomers();
+
+            foreach (var customer in customers)
+            {
+                var customerNode = new TreeNode(customer.Name) { Tag = new NodeData { Type = "Customer", ID = customer.ID, Data = customer } };
+
+                var locations = dbManager.GetLocationsByCustomer(customer.ID);
+                foreach (var location in locations)
+                {
+                    var locationNode = new TreeNode(location.Name) { Tag = new NodeData { Type = "Location", ID = location.ID, Data = location } };
+
+                    var ips = dbManager.GetIPsByLocation(location.ID);
+                    foreach (var ip in ips)
+                    {
+                        var ipNode = new TreeNode($"📍 {ip}") { Tag = new NodeData { Type = "IP", Data = ip } };
+                        locationNode.Nodes.Add(ipNode);
+                    }
+
+                    customerNode.Nodes.Add(locationNode);
+                }
+
+                treeView.Nodes.Add(customerNode);
+            }
+
+            treeView.ExpandAll();
+        }
+
+        private void OnTreeNodeSelected(TreeNode node)
+        {
+            if (node?.Tag == null) return;
+
+            var nodeData = (NodeData)node.Tag;
+            var nameTextBox = FindControl<TextBox>("nameTextBox");
+            var addressTextBox = FindControl<TextBox>("addressTextBox");
+            var ipListBox = FindControl<ListBox>("ipListBox");
+            var detailsLabel = FindControl<Label>("detailsLabel");
+
+            if (nameTextBox == null || addressTextBox == null || ipListBox == null || detailsLabel == null) return;
+
+            ipListBox.Items.Clear();
+
+            if (nodeData.Type == "Customer")
+            {
+                var customer = (Customer)nodeData.Data;
+                detailsLabel.Text = "Kunde bearbeiten";
+                nameTextBox.Text = customer.Name;
+                addressTextBox.Text = customer.Address;
+                nameTextBox.Enabled = true;
+                addressTextBox.Enabled = true;
+            }
+            else if (nodeData.Type == "Location")
+            {
+                var location = (Location)nodeData.Data;
+                detailsLabel.Text = "Standort bearbeiten";
+                nameTextBox.Text = location.Name;
+                addressTextBox.Text = location.Address;
+                nameTextBox.Enabled = true;
+                addressTextBox.Enabled = true;
+
+                var ips = dbManager.GetIPsByLocation(location.ID);
+                foreach (var ip in ips)
+                    ipListBox.Items.Add(ip);
+            }
+            else if (nodeData.Type == "IP")
+            {
+                detailsLabel.Text = "IP-Adresse";
+                nameTextBox.Text = nodeData.Data.ToString();
+                addressTextBox.Text = "";
+                nameTextBox.Enabled = false;
+                addressTextBox.Enabled = false;
+            }
+        }
+
+        private void AddCustomer()
+        {
+            using (var form = new InputDialog("Neuer Kunde", "Kundenname:", "Adresse:"))
+            {
+                if (form.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (!VerifyPassword("Kunde hinzufügen"))
+                        return;
+
+                    dbManager.AddCustomer(form.Value1, form.Value2);
+                    LoadCustomerTree();
+                    statusLabel.Text = "Kunde hinzugefügt";
+                }
+            }
+        }
+
+        private void AddLocation()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            if (treeView?.SelectedNode == null) return;
+
+            var nodeData = treeView.SelectedNode.Tag as NodeData;
+            if (nodeData == null || (nodeData.Type != "Customer" && nodeData.Type != "Location"))
+            {
+                MessageBox.Show("Bitte wähle zuerst einen Kunden aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            int customerId = nodeData.Type == "Customer" ? nodeData.ID : ((Location)nodeData.Data).CustomerID;
+
+            using (var form = new InputDialog("Neuer Standort", "Standortname:", "Adresse:"))
+            {
+                if (form.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (!VerifyPassword("Standort hinzufügen"))
+                        return;
+
+                    dbManager.AddLocation(customerId, form.Value1, form.Value2);
+                    LoadCustomerTree();
+                    statusLabel.Text = "Standort hinzugefügt";
+                }
+            }
+        }
+
+        private void DeleteNode()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            if (treeView?.SelectedNode == null)
+            {
+                MessageBox.Show("Bitte wähle einen Knoten zum Löschen aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var nodeData = treeView.SelectedNode.Tag as NodeData;
+            if (nodeData == null) return;
+
+            if (!VerifyPassword($"{nodeData.Type} löschen"))
+                return;
+
+            if (nodeData.Type == "Customer")
+            {
+                dbManager.DeleteCustomer(nodeData.ID);
+                statusLabel.Text = "Kunde gelöscht";
+            }
+            else if (nodeData.Type == "Location")
+            {
+                dbManager.DeleteLocation(nodeData.ID);
+                statusLabel.Text = "Standort gelöscht";
+            }
+
+            LoadCustomerTree();
+        }
+
+        private void SaveNodeDetails()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            if (treeView?.SelectedNode == null) return;
+
+            var nodeData = treeView.SelectedNode.Tag as NodeData;
+            if (nodeData == null) return;
+
+            var nameTextBox = FindControl<TextBox>("nameTextBox");
+            var addressTextBox = FindControl<TextBox>("addressTextBox");
+            if (nameTextBox == null || addressTextBox == null) return;
+
+            if (!VerifyPassword("Details speichern"))
+                return;
+
+            if (nodeData.Type == "Customer")
+            {
+                dbManager.UpdateCustomer(nodeData.ID, nameTextBox.Text, addressTextBox.Text);
+                statusLabel.Text = "Kunde aktualisiert";
+            }
+            else if (nodeData.Type == "Location")
+            {
+                dbManager.UpdateLocation(nodeData.ID, nameTextBox.Text, addressTextBox.Text);
+                statusLabel.Text = "Standort aktualisiert";
+            }
+
+            LoadCustomerTree();
+        }
+
+        private void AddIPToNode()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            var ipInputTextBox = FindControl<TextBox>("ipInputTextBox");
+
+            if (treeView?.SelectedNode == null || ipInputTextBox == null) return;
+
+            var nodeData = treeView.SelectedNode.Tag as NodeData;
+            if (nodeData == null || nodeData.Type != "Location")
+            {
+                MessageBox.Show("Bitte wähle zuerst einen Standort aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string ip = ipInputTextBox.Text.Trim();
+            if (string.IsNullOrEmpty(ip))
+            {
+                MessageBox.Show("Bitte gib eine IP-Adresse ein!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!VerifyPassword("IP-Adresse hinzufügen"))
+                return;
+
+            dbManager.AddIPToLocation(nodeData.ID, ip);
+            ipInputTextBox.Clear();
+            LoadCustomerTree();
+            OnTreeNodeSelected(treeView.SelectedNode); // Refresh IP list
+            statusLabel.Text = "IP-Adresse hinzugefügt";
+        }
+
+        private void RemoveIPFromNode()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            var ipListBox = FindControl<ListBox>("ipListBox");
+
+            if (ipListBox?.SelectedItem == null)
+            {
+                MessageBox.Show("Bitte wähle eine IP-Adresse aus der Liste!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            if (nodeData == null || nodeData.Type != "Location") return;
+
+            if (!VerifyPassword("IP-Adresse entfernen"))
+                return;
+
+            string ip = ipListBox.SelectedItem.ToString();
+            dbManager.RemoveIPFromLocation(nodeData.ID, ip);
+            LoadCustomerTree();
+            OnTreeNodeSelected(treeView.SelectedNode);
+            statusLabel.Text = "IP-Adresse entfernt";
+        }
+
+        private T FindControl<T>(string name) where T : Control
+        {
+            return Controls.Find(name, true).FirstOrDefault() as T;
+        }
+
     }
 
     // ===== DATA CLASSES =====
@@ -487,6 +947,7 @@ namespace NmapInventory
 
     public class DatabaseDevice
     {
+        public int ID { get; set; }
         public string Zeitstempel { get; set; }
         public string IP { get; set; }
         public string Hostname { get; set; }
@@ -496,6 +957,7 @@ namespace NmapInventory
 
     public class DatabaseSoftware
     {
+        public int ID { get; set; }
         public string Zeitstempel { get; set; }
         public string Name { get; set; }
         public string Version { get; set; }
@@ -503,6 +965,28 @@ namespace NmapInventory
         public string InstallDate { get; set; }
         public string PCName { get; set; }
         public string LastUpdate { get; set; }
+    }
+
+    public class Customer
+    {
+        public int ID { get; set; }
+        public string Name { get; set; }
+        public string Address { get; set; }
+    }
+
+    public class Location
+    {
+        public int ID { get; set; }
+        public int CustomerID { get; set; }
+        public string Name { get; set; }
+        public string Address { get; set; }
+    }
+
+    public class NodeData
+    {
+        public string Type { get; set; } // "Customer", "Location", "IP"
+        public int ID { get; set; }
+        public object Data { get; set; }
     }
 
     // ===== MANAGER CLASSES =====
@@ -583,12 +1067,27 @@ namespace NmapInventory
             sb.AppendLine("Computer: " + Environment.MachineName);
             sb.AppendLine("OS: " + Environment.OSVersion.VersionString);
             sb.AppendLine();
+
+            sb.AppendLine("=== SYSTEM ===");
+            try
+            {
+                var searcher = new ManagementObjectSearcher("SELECT Manufacturer, Model FROM Win32_ComputerSystem");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    sb.AppendLine("Hersteller: " + obj["Manufacturer"]);
+                    sb.AppendLine("Modell: " + obj["Model"]);
+                }
+            }
+            catch (Exception ex) { sb.AppendLine("Fehler: " + ex.Message); }
+            sb.AppendLine();
+
             sb.AppendLine("=== PROZESSOR ===");
             try
             {
-                var searcher = new ManagementObjectSearcher("SELECT Name, MaxClockSpeed FROM Win32_Processor");
+                var searcher = new ManagementObjectSearcher("SELECT Name, Manufacturer, MaxClockSpeed FROM Win32_Processor");
                 foreach (ManagementObject obj in searcher.Get())
                 {
+                    sb.AppendLine("Hersteller: " + obj["Manufacturer"]);
                     sb.AppendLine("Name: " + obj["Name"]);
                     sb.AppendLine("Taktfrequenz: " + obj["MaxClockSpeed"] + " MHz");
                 }
@@ -619,19 +1118,29 @@ namespace NmapInventory
                 var scope = new ManagementScope($@"\\{computerIP}\root\cimv2", options);
                 scope.Connect();
 
-                sb.AppendLine("=== BETRIEBSSYSTEM ===");
-                var osSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Caption, Version, OSArchitecture FROM Win32_OperatingSystem"));
+                sb.AppendLine("=== SYSTEM ===");
+                var sysSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Manufacturer, Model FROM Win32_ComputerSystem"));
+                foreach (ManagementObject obj in sysSearcher.Get())
+                {
+                    sb.AppendLine("Hersteller: " + obj["Manufacturer"]);
+                    sb.AppendLine("Modell: " + obj["Model"]);
+                }
+
+                sb.AppendLine("\n=== BETRIEBSSYSTEM ===");
+                var osSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Caption, Version, OSArchitecture, Manufacturer FROM Win32_OperatingSystem"));
                 foreach (ManagementObject obj in osSearcher.Get())
                 {
+                    sb.AppendLine("Hersteller: " + obj["Manufacturer"]);
                     sb.AppendLine("OS: " + obj["Caption"]);
                     sb.AppendLine("Version: " + obj["Version"]);
                     sb.AppendLine("Architektur: " + obj["OSArchitecture"]);
                 }
 
                 sb.AppendLine("\n=== PROZESSOR ===");
-                var cpuSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Name, MaxClockSpeed, NumberOfCores, NumberOfLogicalProcessors FROM Win32_Processor"));
+                var cpuSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Name, Manufacturer, MaxClockSpeed, NumberOfCores, NumberOfLogicalProcessors FROM Win32_Processor"));
                 foreach (ManagementObject obj in cpuSearcher.Get())
                 {
+                    sb.AppendLine("Hersteller: " + obj["Manufacturer"]);
                     sb.AppendLine("Name: " + obj["Name"]);
                     sb.AppendLine("Taktfrequenz: " + obj["MaxClockSpeed"] + " MHz");
                     sb.AppendLine("Kerne: " + obj["NumberOfCores"]);
@@ -649,6 +1158,21 @@ namespace NmapInventory
                     sb.AppendLine($"Belegt: {totalMB - freeMB} MB");
                 }
 
+                // RAM-Module mit Hersteller
+                sb.AppendLine("\n=== RAM-MODULE ===");
+                var ramSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Manufacturer, Capacity, Speed, PartNumber FROM Win32_PhysicalMemory"));
+                int moduleCount = 0;
+                foreach (ManagementObject obj in ramSearcher.Get())
+                {
+                    moduleCount++;
+                    long capacityGB = Convert.ToInt64(obj["Capacity"]) / (1024 * 1024 * 1024);
+                    sb.AppendLine($"\nModul {moduleCount}:");
+                    sb.AppendLine("  Hersteller: " + (obj["Manufacturer"]?.ToString()?.Trim() ?? "Unbekannt"));
+                    sb.AppendLine($"  Kapazität: {capacityGB} GB");
+                    sb.AppendLine("  Geschwindigkeit: " + obj["Speed"] + " MHz");
+                    sb.AppendLine("  Teilenummer: " + (obj["PartNumber"]?.ToString()?.Trim() ?? "N/A"));
+                }
+
                 sb.AppendLine("\n=== FESTPLATTEN ===");
                 var diskSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT DeviceID, Size, FreeSpace, VolumeName FROM Win32_LogicalDisk WHERE DriveType=3"));
                 foreach (ManagementObject obj in diskSearcher.Get())
@@ -663,12 +1187,29 @@ namespace NmapInventory
                     sb.AppendLine($"  Belegt: {sizeGB - freeGB} GB");
                 }
 
+                // Physische Festplatten mit Hersteller
+                sb.AppendLine("\n=== PHYSISCHE FESTPLATTEN ===");
+                var physDiskSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Model, Manufacturer, Size, MediaType, InterfaceType FROM Win32_DiskDrive"));
+                int diskCount = 0;
+                foreach (ManagementObject obj in physDiskSearcher.Get())
+                {
+                    diskCount++;
+                    long sizeGB = Convert.ToInt64(obj["Size"]) / (1024 * 1024 * 1024);
+                    sb.AppendLine($"\nFestplatte {diskCount}:");
+                    sb.AppendLine("  Hersteller: " + (obj["Manufacturer"]?.ToString() ?? "Unbekannt"));
+                    sb.AppendLine("  Modell: " + obj["Model"]);
+                    sb.AppendLine($"  Größe: {sizeGB} GB");
+                    sb.AppendLine("  Typ: " + (obj["MediaType"]?.ToString() ?? "N/A"));
+                    sb.AppendLine("  Schnittstelle: " + (obj["InterfaceType"]?.ToString() ?? "N/A"));
+                }
+
                 sb.AppendLine("\n=== NETZWERKADAPTER ===");
-                var netSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Description, MACAddress, IPEnabled FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=True"));
+                var netSearcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Description, Manufacturer, MACAddress, IPEnabled FROM Win32_NetworkAdapter WHERE PhysicalAdapter=True"));
                 foreach (ManagementObject obj in netSearcher.Get())
                 {
-                    sb.AppendLine("Adapter: " + obj["Description"]);
-                    sb.AppendLine("MAC: " + obj["MACAddress"]);
+                    sb.AppendLine("\nAdapter: " + obj["Description"]);
+                    sb.AppendLine("  Hersteller: " + (obj["Manufacturer"]?.ToString() ?? "Unbekannt"));
+                    sb.AppendLine("  MAC: " + (obj["MACAddress"]?.ToString() ?? "N/A"));
                 }
             }
             catch (Exception ex)
@@ -984,7 +1525,10 @@ namespace NmapInventory
             {
                 conn.Open();
                 string createTableQuery = @"CREATE TABLE IF NOT EXISTS Geraete (ID INTEGER PRIMARY KEY, Zeitstempel DATETIME DEFAULT CURRENT_TIMESTAMP, IP TEXT, Hostname TEXT, Status TEXT, Ports TEXT);
-                CREATE TABLE IF NOT EXISTS Software (ID INTEGER PRIMARY KEY, Zeitstempel DATETIME DEFAULT CURRENT_TIMESTAMP, Name TEXT, Version TEXT, Publisher TEXT, InstallLocation TEXT, Source TEXT, InstallDate TEXT, PCName TEXT, LastUpdate TEXT);";
+                CREATE TABLE IF NOT EXISTS Software (ID INTEGER PRIMARY KEY, Zeitstempel DATETIME DEFAULT CURRENT_TIMESTAMP, Name TEXT, Version TEXT, Publisher TEXT, InstallLocation TEXT, Source TEXT, InstallDate TEXT, PCName TEXT, LastUpdate TEXT);
+                CREATE TABLE IF NOT EXISTS Customers (ID INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL, Address TEXT);
+                CREATE TABLE IF NOT EXISTS Locations (ID INTEGER PRIMARY KEY AUTOINCREMENT, CustomerID INTEGER, Name TEXT NOT NULL, Address TEXT, FOREIGN KEY(CustomerID) REFERENCES Customers(ID) ON DELETE CASCADE);
+                CREATE TABLE IF NOT EXISTS LocationIPs (ID INTEGER PRIMARY KEY AUTOINCREMENT, LocationID INTEGER, IPAddress TEXT NOT NULL, FOREIGN KEY(LocationID) REFERENCES Locations(ID) ON DELETE CASCADE);";
                 using (var cmd = new SQLiteCommand(createTableQuery, conn)) cmd.ExecuteNonQuery();
 
                 // Prüfe ob PCName-Spalte existiert, falls nicht, füge sie hinzu (für bestehende Datenbanken)
@@ -1098,12 +1642,13 @@ namespace NmapInventory
             {
                 conn.Open();
                 string whereClause = GetDateFilter(filter);
-                string query = $"SELECT Zeitstempel, IP, Hostname, Status, Ports FROM Geraete {whereClause} ORDER BY Zeitstempel DESC LIMIT 100";
+                string query = $"SELECT ID, Zeitstempel, IP, Hostname, Status, Ports FROM Geraete {whereClause} ORDER BY Zeitstempel DESC LIMIT 100";
                 using (var cmd = new SQLiteCommand(query, conn))
                 using (var reader = cmd.ExecuteReader())
                     while (reader.Read())
                         devices.Add(new DatabaseDevice
                         {
+                            ID = Convert.ToInt32(reader["ID"]),
                             Zeitstempel = reader["Zeitstempel"].ToString(),
                             IP = reader["IP"].ToString(),
                             Hostname = reader["Hostname"].ToString(),
@@ -1121,12 +1666,13 @@ namespace NmapInventory
             {
                 conn.Open();
                 string whereClause = GetDateFilter(filter);
-                string query = $"SELECT Zeitstempel, Name, Version, Publisher, InstallDate, PCName, LastUpdate FROM Software {whereClause} ORDER BY Zeitstempel DESC LIMIT 100";
+                string query = $"SELECT ID, Zeitstempel, Name, Version, Publisher, InstallDate, PCName, LastUpdate FROM Software {whereClause} ORDER BY Zeitstempel DESC LIMIT 100";
                 using (var cmd = new SQLiteCommand(query, conn))
                 using (var reader = cmd.ExecuteReader())
                     while (reader.Read())
                         software.Add(new DatabaseSoftware
                         {
+                            ID = Convert.ToInt32(reader["ID"]),
                             Zeitstempel = reader["Zeitstempel"].ToString(),
                             Name = reader["Name"].ToString(),
                             Version = reader["Version"].ToString(),
@@ -1153,6 +1699,248 @@ namespace NmapInventory
                     return "WHERE DATE(Zeitstempel) >= DATE('now', 'start of year')";
                 default:
                     return "";
+            }
+        }
+
+        public void UpdateDevices(List<DatabaseDevice> devices)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                foreach (var dev in devices)
+                {
+                    using (var cmd = new SQLiteCommand("UPDATE Geraete SET IP=@IP, Hostname=@Hostname, Status=@Status, Ports=@Ports WHERE ID=@ID", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@ID", dev.ID);
+                        cmd.Parameters.AddWithValue("@IP", dev.IP ?? "");
+                        cmd.Parameters.AddWithValue("@Hostname", dev.Hostname ?? "");
+                        cmd.Parameters.AddWithValue("@Status", dev.Status ?? "");
+                        cmd.Parameters.AddWithValue("@Ports", dev.Ports ?? "");
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+            }
+        }
+
+        public void DeleteDevice(int id)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("DELETE FROM Geraete WHERE ID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void UpdateSoftwareEntries(List<DatabaseSoftware> software)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                foreach (var sw in software)
+                {
+                    using (var cmd = new SQLiteCommand("UPDATE Software SET PCName=@PCName, Name=@Name, Version=@Version, Publisher=@Publisher, InstallDate=@InstallDate, LastUpdate=@LastUpdate WHERE ID=@ID", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@ID", sw.ID);
+                        cmd.Parameters.AddWithValue("@PCName", sw.PCName ?? "");
+                        cmd.Parameters.AddWithValue("@Name", sw.Name ?? "");
+                        cmd.Parameters.AddWithValue("@Version", sw.Version ?? "");
+                        cmd.Parameters.AddWithValue("@Publisher", sw.Publisher ?? "");
+                        cmd.Parameters.AddWithValue("@InstallDate", sw.InstallDate ?? "");
+                        cmd.Parameters.AddWithValue("@LastUpdate", sw.LastUpdate ?? "");
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+            }
+        }
+
+        public void DeleteSoftwareEntry(int id)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("DELETE FROM Software WHERE ID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        // === KUNDEN/STANDORT VERWALTUNG ===
+
+        public List<Customer> GetCustomers()
+        {
+            var customers = new List<Customer>();
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT ID, Name, Address FROM Customers ORDER BY Name", conn))
+                using (var reader = cmd.ExecuteReader())
+                    while (reader.Read())
+                        customers.Add(new Customer
+                        {
+                            ID = Convert.ToInt32(reader["ID"]),
+                            Name = reader["Name"].ToString(),
+                            Address = reader["Address"]?.ToString() ?? ""
+                        });
+            }
+            return customers;
+        }
+
+        public List<Location> GetLocationsByCustomer(int customerId)
+        {
+            var locations = new List<Location>();
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT ID, CustomerID, Name, Address FROM Locations WHERE CustomerID=@CustomerID ORDER BY Name", conn))
+                {
+                    cmd.Parameters.AddWithValue("@CustomerID", customerId);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read())
+                            locations.Add(new Location
+                            {
+                                ID = Convert.ToInt32(reader["ID"]),
+                                CustomerID = Convert.ToInt32(reader["CustomerID"]),
+                                Name = reader["Name"].ToString(),
+                                Address = reader["Address"]?.ToString() ?? ""
+                            });
+                }
+            }
+            return locations;
+        }
+
+        public List<string> GetIPsByLocation(int locationId)
+        {
+            var ips = new List<string>();
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT IPAddress FROM LocationIPs WHERE LocationID=@LocationID ORDER BY IPAddress", conn))
+                {
+                    cmd.Parameters.AddWithValue("@LocationID", locationId);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read())
+                            ips.Add(reader["IPAddress"].ToString());
+                }
+            }
+            return ips;
+        }
+
+        public void AddCustomer(string name, string address)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("INSERT INTO Customers (Name, Address) VALUES (@Name, @Address)", conn))
+                {
+                    cmd.Parameters.AddWithValue("@Name", name);
+                    cmd.Parameters.AddWithValue("@Address", address ?? "");
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void AddLocation(int customerId, string name, string address)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("INSERT INTO Locations (CustomerID, Name, Address) VALUES (@CustomerID, @Name, @Address)", conn))
+                {
+                    cmd.Parameters.AddWithValue("@CustomerID", customerId);
+                    cmd.Parameters.AddWithValue("@Name", name);
+                    cmd.Parameters.AddWithValue("@Address", address ?? "");
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void AddIPToLocation(int locationId, string ip)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("INSERT INTO LocationIPs (LocationID, IPAddress) VALUES (@LocationID, @IPAddress)", conn))
+                {
+                    cmd.Parameters.AddWithValue("@LocationID", locationId);
+                    cmd.Parameters.AddWithValue("@IPAddress", ip);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void UpdateCustomer(int id, string name, string address)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("UPDATE Customers SET Name=@Name, Address=@Address WHERE ID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", id);
+                    cmd.Parameters.AddWithValue("@Name", name);
+                    cmd.Parameters.AddWithValue("@Address", address ?? "");
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void UpdateLocation(int id, string name, string address)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("UPDATE Locations SET Name=@Name, Address=@Address WHERE ID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", id);
+                    cmd.Parameters.AddWithValue("@Name", name);
+                    cmd.Parameters.AddWithValue("@Address", address ?? "");
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void DeleteCustomer(int id)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("DELETE FROM Customers WHERE ID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void DeleteLocation(int id)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("DELETE FROM Locations WHERE ID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void RemoveIPFromLocation(int locationId, string ip)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("DELETE FROM LocationIPs WHERE LocationID=@LocationID AND IPAddress=@IPAddress", conn))
+                {
+                    cmd.Parameters.AddWithValue("@LocationID", locationId);
+                    cmd.Parameters.AddWithValue("@IPAddress", ip);
+                    cmd.ExecuteNonQuery();
+                }
             }
         }
     }
@@ -1230,6 +2018,128 @@ namespace NmapInventory
                     DialogResult = DialogResult.None;
                 }
             };
+        }
+    }
+
+    public class PasswordVerificationForm : Form
+    {
+        private const string REQUIRED_PASSWORD = "Administrator";
+        private TextBox passwordTextBox;
+        private string actionDescription;
+
+        public PasswordVerificationForm(string action)
+        {
+            actionDescription = action;
+
+            Text = "Sicherheitsabfrage";
+            Width = 450;
+            Height = 220;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+
+            var infoLabel = new Label
+            {
+                Text = $"WARNUNG: Du bist dabei '{action}' auszuführen!\n\nGib das Sicherheitspasswort ein:",
+                Location = new Point(20, 20),
+                Width = 400,
+                Height = 60,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                ForeColor = Color.DarkRed
+            };
+
+            passwordTextBox = new TextBox
+            {
+                Location = new Point(20, 90),
+                Width = 400,
+                Font = new Font("Segoe UI", 11),
+                UseSystemPasswordChar = true
+            };
+
+            var hintLabel = new Label
+            {
+                Text = $"Erforderliches Passwort: \"{REQUIRED_PASSWORD}\"",
+                Location = new Point(20, 120),
+                Width = 400,
+                ForeColor = Color.DarkBlue,
+                Font = new Font("Segoe UI", 9, FontStyle.Italic)
+            };
+
+            var okBtn = new Button
+            {
+                Text = "Bestätigen",
+                Location = new Point(150, 150),
+                Width = 100,
+                BackColor = Color.LightGreen
+            };
+            okBtn.Click += OkButton_Click;
+
+            var cancelBtn = new Button
+            {
+                Text = "Abbrechen",
+                Location = new Point(260, 150),
+                Width = 100,
+                DialogResult = DialogResult.Cancel,
+                BackColor = Color.LightCoral
+            };
+
+            Controls.AddRange(new Control[] { infoLabel, passwordTextBox, hintLabel, okBtn, cancelBtn });
+
+            AcceptButton = okBtn;
+            CancelButton = cancelBtn;
+        }
+
+        private void OkButton_Click(object sender, EventArgs e)
+        {
+            if (passwordTextBox.Text == REQUIRED_PASSWORD)
+            {
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+            else
+            {
+                MessageBox.Show(
+                    $"Falsches Passwort!\n\nDas korrekte Passwort lautet: \"{REQUIRED_PASSWORD}\"",
+                    "Zugriff verweigert",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+                passwordTextBox.Clear();
+                passwordTextBox.Focus();
+            }
+        }
+    }
+
+    public class InputDialog : Form
+    {
+        public string Value1 { get; private set; }
+        public string Value2 { get; private set; }
+
+        public InputDialog(string title, string label1, string label2)
+        {
+            Text = title;
+            Width = 450;
+            Height = 220;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+
+            var lbl1 = new Label { Text = label1, Location = new Point(20, 20), AutoSize = true };
+            var txt1 = new TextBox { Location = new Point(20, 45), Width = 400 };
+
+            var lbl2 = new Label { Text = label2, Location = new Point(20, 80), AutoSize = true };
+            var txt2 = new TextBox { Location = new Point(20, 105), Width = 400, Multiline = true, Height = 50 };
+
+            var okBtn = new Button { Text = "OK", Location = new Point(220, 165), Width = 90, DialogResult = DialogResult.OK, BackColor = Color.LightGreen };
+            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(320, 165), Width = 100, DialogResult = DialogResult.Cancel };
+
+            okBtn.Click += (s, e) => { Value1 = txt1.Text; Value2 = txt2.Text; };
+
+            Controls.AddRange(new Control[] { lbl1, txt1, lbl2, txt2, okBtn, cancelBtn });
+            AcceptButton = okBtn;
+            CancelButton = cancelBtn;
         }
     }
 
