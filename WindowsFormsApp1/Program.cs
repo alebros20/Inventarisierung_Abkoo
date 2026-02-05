@@ -268,19 +268,40 @@ namespace NmapInventory
             // IP-Adressen Zuordnung
             var ipLabel = new Label { Text = "Zugeordnete IP-Adressen:", Location = new Point(10, 190), Font = new Font("Segoe UI", 10, FontStyle.Bold), AutoSize = true };
 
-            var ipListBox = new ListBox { Name = "ipListBox", Location = new Point(10, 220), Width = 400, Height = 200 };
+            var ipDataGridView = new DataGridView
+            {
+                Name = "ipDataGridView",
+                Location = new Point(10, 220),
+                Width = 600,
+                Height = 200,
+                AllowUserToAddRows = false,
+                ReadOnly = true,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = true
+            };
+            ipDataGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Arbeitsplatz", Width = 200 });
+            ipDataGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP-Adresse", Width = 150 });
+            ipDataGridView.CellDoubleClick += (s, e) => EditIPEntry(e.RowIndex);
 
-            var ipInputLabel = new Label { Text = "IP hinzufügen:", Location = new Point(10, 430), AutoSize = true };
-            var ipInputTextBox = new TextBox { Name = "ipInputTextBox", Location = new Point(100, 427), Width = 200 };
-            var addIpBtn = new Button { Text = "IP hinzufügen", Location = new Point(310, 425), Width = 100, BackColor = Color.LightBlue };
+            var ipInputLabel = new Label { Text = "Arbeitsplatz:", Location = new Point(10, 430), AutoSize = true };
+            var workstationInputTextBox = new TextBox { Name = "workstationInputTextBox", Location = new Point(100, 427), Width = 200 };
+
+            var ipInputLabel2 = new Label { Text = "IP:", Location = new Point(310, 430), AutoSize = true };
+            var ipInputTextBox = new TextBox { Name = "ipInputTextBox", Location = new Point(340, 427), Width = 150 };
+
+            var addIpBtn = new Button { Text = "IP hinzufügen", Location = new Point(500, 425), Width = 110, BackColor = Color.LightBlue };
             addIpBtn.Click += (s, e) => AddIPToNode();
 
-            var removeIpBtn = new Button { Text = "IP entfernen", Location = new Point(10, 460), Width = 100, BackColor = Color.IndianRed };
+            var removeIpBtn = new Button { Text = "IP(s) entfernen", Location = new Point(10, 460), Width = 120, BackColor = Color.IndianRed };
             removeIpBtn.Click += (s, e) => RemoveIPFromNode();
+
+            var importFromDbBtn = new Button { Text = "Aus DB importieren", Location = new Point(140, 460), Width = 150, BackColor = Color.LightGoldenrodYellow };
+            importFromDbBtn.Click += (s, e) => ImportIPsFromDatabase();
 
             rightPanel.Controls.AddRange(new Control[] {
                 detailsLabel, nameLabel, nameTextBox, addressLabel, addressTextBox, saveDetailsBtn,
-                ipLabel, ipListBox, ipInputLabel, ipInputTextBox, addIpBtn, removeIpBtn
+                ipLabel, ipDataGridView, ipInputLabel, workstationInputTextBox, ipInputLabel2, ipInputTextBox,
+                addIpBtn, removeIpBtn, importFromDbBtn
             });
 
             splitContainer.Panel2.Controls.Add(rightPanel);
@@ -691,10 +712,13 @@ namespace NmapInventory
                 {
                     var locationNode = new TreeNode(location.Name) { Tag = new NodeData { Type = "Location", ID = location.ID, Data = location } };
 
-                    var ips = dbManager.GetIPsByLocation(location.ID);
+                    var ips = dbManager.GetIPsWithWorkstationByLocation(location.ID);
                     foreach (var ip in ips)
                     {
-                        var ipNode = new TreeNode($"📍 {ip}") { Tag = new NodeData { Type = "IP", Data = ip } };
+                        string displayText = string.IsNullOrEmpty(ip.WorkstationName)
+                            ? $"📍 {ip.IPAddress}"
+                            : $"💻 {ip.WorkstationName} ({ip.IPAddress})";
+                        var ipNode = new TreeNode(displayText) { Tag = new NodeData { Type = "IP", Data = ip } };
                         locationNode.Nodes.Add(ipNode);
                     }
 
@@ -714,12 +738,12 @@ namespace NmapInventory
             var nodeData = (NodeData)node.Tag;
             var nameTextBox = FindControl<TextBox>("nameTextBox");
             var addressTextBox = FindControl<TextBox>("addressTextBox");
-            var ipListBox = FindControl<ListBox>("ipListBox");
+            var ipDataGridView = FindControl<DataGridView>("ipDataGridView");
             var detailsLabel = FindControl<Label>("detailsLabel");
 
-            if (nameTextBox == null || addressTextBox == null || ipListBox == null || detailsLabel == null) return;
+            if (nameTextBox == null || addressTextBox == null || ipDataGridView == null || detailsLabel == null) return;
 
-            ipListBox.Items.Clear();
+            ipDataGridView.Rows.Clear();
 
             if (nodeData.Type == "Customer")
             {
@@ -739,15 +763,16 @@ namespace NmapInventory
                 nameTextBox.Enabled = true;
                 addressTextBox.Enabled = true;
 
-                var ips = dbManager.GetIPsByLocation(location.ID);
+                var ips = dbManager.GetIPsWithWorkstationByLocation(location.ID);
                 foreach (var ip in ips)
-                    ipListBox.Items.Add(ip);
+                    ipDataGridView.Rows.Add(ip.WorkstationName ?? "", ip.IPAddress);
             }
             else if (nodeData.Type == "IP")
             {
+                var ip = (LocationIP)nodeData.Data;
                 detailsLabel.Text = "IP-Adresse";
-                nameTextBox.Text = nodeData.Data.ToString();
-                addressTextBox.Text = "";
+                nameTextBox.Text = ip.WorkstationName ?? "";
+                addressTextBox.Text = ip.IPAddress;
                 nameTextBox.Enabled = false;
                 addressTextBox.Enabled = false;
             }
@@ -859,8 +884,9 @@ namespace NmapInventory
         {
             var treeView = FindControl<TreeView>("customerTreeView");
             var ipInputTextBox = FindControl<TextBox>("ipInputTextBox");
+            var workstationInputTextBox = FindControl<TextBox>("workstationInputTextBox");
 
-            if (treeView?.SelectedNode == null || ipInputTextBox == null) return;
+            if (treeView?.SelectedNode == null || ipInputTextBox == null || workstationInputTextBox == null) return;
 
             var nodeData = treeView.SelectedNode.Tag as NodeData;
             if (nodeData == null || nodeData.Type != "Location")
@@ -870,6 +896,8 @@ namespace NmapInventory
             }
 
             string ip = ipInputTextBox.Text.Trim();
+            string workstation = workstationInputTextBox.Text.Trim();
+
             if (string.IsNullOrEmpty(ip))
             {
                 MessageBox.Show("Bitte gib eine IP-Adresse ein!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -879,35 +907,114 @@ namespace NmapInventory
             if (!VerifyPassword("IP-Adresse hinzufügen"))
                 return;
 
-            dbManager.AddIPToLocation(nodeData.ID, ip);
+            dbManager.AddIPToLocation(nodeData.ID, ip, workstation);
             ipInputTextBox.Clear();
+            workstationInputTextBox.Clear();
             LoadCustomerTree();
-            OnTreeNodeSelected(treeView.SelectedNode); // Refresh IP list
+            OnTreeNodeSelected(treeView.SelectedNode);
             statusLabel.Text = "IP-Adresse hinzugefügt";
         }
 
         private void RemoveIPFromNode()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            var ipListBox = FindControl<ListBox>("ipListBox");
+            var ipDataGridView = FindControl<DataGridView>("ipDataGridView");
 
-            if (ipListBox?.SelectedItem == null)
+            if (ipDataGridView?.SelectedRows.Count == 0)
             {
-                MessageBox.Show("Bitte wähle eine IP-Adresse aus der Liste!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Bitte wähle mindestens eine IP-Adresse aus der Liste!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
             var nodeData = treeView?.SelectedNode?.Tag as NodeData;
             if (nodeData == null || nodeData.Type != "Location") return;
 
-            if (!VerifyPassword("IP-Adresse entfernen"))
+            if (!VerifyPassword($"{ipDataGridView.SelectedRows.Count} IP-Adresse(n) entfernen"))
                 return;
 
-            string ip = ipListBox.SelectedItem.ToString();
-            dbManager.RemoveIPFromLocation(nodeData.ID, ip);
+            foreach (DataGridViewRow row in ipDataGridView.SelectedRows)
+            {
+                string ip = row.Cells[1].Value?.ToString();
+                if (!string.IsNullOrEmpty(ip))
+                    dbManager.RemoveIPFromLocation(nodeData.ID, ip);
+            }
+
             LoadCustomerTree();
             OnTreeNodeSelected(treeView.SelectedNode);
-            statusLabel.Text = "IP-Adresse entfernt";
+            statusLabel.Text = $"{ipDataGridView.SelectedRows.Count} IP-Adresse(n) entfernt";
+        }
+
+        private void EditIPEntry(int rowIndex)
+        {
+            if (rowIndex < 0) return;
+
+            var treeView = FindControl<TreeView>("customerTreeView");
+            var ipDataGridView = FindControl<DataGridView>("ipDataGridView");
+
+            if (ipDataGridView == null) return;
+
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            if (nodeData == null || nodeData.Type != "Location") return;
+
+            string currentWorkstation = ipDataGridView.Rows[rowIndex].Cells[0].Value?.ToString();
+            string currentIP = ipDataGridView.Rows[rowIndex].Cells[1].Value?.ToString();
+
+            using (var form = new InputDialog("IP-Eintrag bearbeiten", "Arbeitsplatz:", "IP-Adresse:"))
+            {
+                form.Value1 = currentWorkstation;
+                form.Value2 = currentIP;
+
+                if (form.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (!VerifyPassword("IP-Eintrag bearbeiten"))
+                        return;
+
+                    // Alte IP entfernen und neue hinzufügen
+                    dbManager.RemoveIPFromLocation(nodeData.ID, currentIP);
+                    dbManager.AddIPToLocation(nodeData.ID, form.Value2, form.Value1);
+
+                    LoadCustomerTree();
+                    OnTreeNodeSelected(treeView.SelectedNode);
+                    statusLabel.Text = "IP-Eintrag aktualisiert";
+                }
+            }
+        }
+
+        private void ImportIPsFromDatabase()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            if (treeView?.SelectedNode == null) return;
+
+            var nodeData = treeView.SelectedNode.Tag as NodeData;
+            if (nodeData == null || nodeData.Type != "Location")
+            {
+                MessageBox.Show("Bitte wähle zuerst einen Standort aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var form = new IPImportDialog(dbManager))
+            {
+                if (form.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (form.SelectedIPs.Count == 0)
+                    {
+                        MessageBox.Show("Keine IPs ausgewählt!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    if (!VerifyPassword($"{form.SelectedIPs.Count} IP(s) importieren"))
+                        return;
+
+                    foreach (var ipEntry in form.SelectedIPs)
+                    {
+                        dbManager.AddIPToLocation(nodeData.ID, ipEntry.Item1, ipEntry.Item2);
+                    }
+
+                    LoadCustomerTree();
+                    OnTreeNodeSelected(treeView.SelectedNode);
+                    statusLabel.Text = $"{form.SelectedIPs.Count} IP(s) importiert";
+                }
+            }
         }
 
         private T FindControl<T>(string name) where T : Control
@@ -980,6 +1087,14 @@ namespace NmapInventory
         public int CustomerID { get; set; }
         public string Name { get; set; }
         public string Address { get; set; }
+    }
+
+    public class LocationIP
+    {
+        public int ID { get; set; }
+        public int LocationID { get; set; }
+        public string IPAddress { get; set; }
+        public string WorkstationName { get; set; }
     }
 
     public class NodeData
@@ -1528,24 +1643,32 @@ namespace NmapInventory
                 CREATE TABLE IF NOT EXISTS Software (ID INTEGER PRIMARY KEY, Zeitstempel DATETIME DEFAULT CURRENT_TIMESTAMP, Name TEXT, Version TEXT, Publisher TEXT, InstallLocation TEXT, Source TEXT, InstallDate TEXT, PCName TEXT, LastUpdate TEXT);
                 CREATE TABLE IF NOT EXISTS Customers (ID INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL, Address TEXT);
                 CREATE TABLE IF NOT EXISTS Locations (ID INTEGER PRIMARY KEY AUTOINCREMENT, CustomerID INTEGER, Name TEXT NOT NULL, Address TEXT, FOREIGN KEY(CustomerID) REFERENCES Customers(ID) ON DELETE CASCADE);
-                CREATE TABLE IF NOT EXISTS LocationIPs (ID INTEGER PRIMARY KEY AUTOINCREMENT, LocationID INTEGER, IPAddress TEXT NOT NULL, FOREIGN KEY(LocationID) REFERENCES Locations(ID) ON DELETE CASCADE);";
+                CREATE TABLE IF NOT EXISTS LocationIPs (ID INTEGER PRIMARY KEY AUTOINCREMENT, LocationID INTEGER, IPAddress TEXT NOT NULL, WorkstationName TEXT, FOREIGN KEY(LocationID) REFERENCES Locations(ID) ON DELETE CASCADE);";
                 using (var cmd = new SQLiteCommand(createTableQuery, conn)) cmd.ExecuteNonQuery();
 
-                // Prüfe ob PCName-Spalte existiert, falls nicht, füge sie hinzu (für bestehende Datenbanken)
+                // Prüfe ob PCName-Spalte existiert
                 try
                 {
                     using (var cmd = new SQLiteCommand("ALTER TABLE Software ADD COLUMN PCName TEXT", conn))
                         cmd.ExecuteNonQuery();
                 }
-                catch { /* Spalte existiert bereits */ }
+                catch { }
 
-                // Prüfe ob LastUpdate-Spalte existiert, falls nicht, füge sie hinzu
+                // Prüfe ob LastUpdate-Spalte existiert
                 try
                 {
                     using (var cmd = new SQLiteCommand("ALTER TABLE Software ADD COLUMN LastUpdate TEXT", conn))
                         cmd.ExecuteNonQuery();
                 }
-                catch { /* Spalte existiert bereits */ }
+                catch { }
+
+                // Prüfe ob WorkstationName-Spalte existiert
+                try
+                {
+                    using (var cmd = new SQLiteCommand("ALTER TABLE LocationIPs ADD COLUMN WorkstationName TEXT", conn))
+                        cmd.ExecuteNonQuery();
+                }
+                catch { }
             }
         }
 
@@ -1831,6 +1954,47 @@ namespace NmapInventory
             return ips;
         }
 
+        public List<LocationIP> GetIPsWithWorkstationByLocation(int locationId)
+        {
+            var ips = new List<LocationIP>();
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT ID, LocationID, IPAddress, WorkstationName FROM LocationIPs WHERE LocationID=@LocationID ORDER BY WorkstationName, IPAddress", conn))
+                {
+                    cmd.Parameters.AddWithValue("@LocationID", locationId);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read())
+                            ips.Add(new LocationIP
+                            {
+                                ID = Convert.ToInt32(reader["ID"]),
+                                LocationID = Convert.ToInt32(reader["LocationID"]),
+                                IPAddress = reader["IPAddress"].ToString(),
+                                WorkstationName = reader["WorkstationName"]?.ToString()
+                            });
+                }
+            }
+            return ips;
+        }
+
+        public List<(string IP, string Hostname)> GetAllIPsFromDevices()
+        {
+            var ips = new List<(string, string)>();
+            using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT DISTINCT IP, Hostname FROM Geraete WHERE IP IS NOT NULL AND IP != '' ORDER BY IP", conn))
+                using (var reader = cmd.ExecuteReader())
+                    while (reader.Read())
+                    {
+                        string ip = reader["IP"].ToString();
+                        string hostname = reader["Hostname"]?.ToString() ?? "";
+                        ips.Add((ip, hostname));
+                    }
+            }
+            return ips;
+        }
+
         public void AddCustomer(string name, string address)
         {
             using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
@@ -1860,15 +2024,16 @@ namespace NmapInventory
             }
         }
 
-        public void AddIPToLocation(int locationId, string ip)
+        public void AddIPToLocation(int locationId, string ip, string workstationName = "")
         {
             using (var conn = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
             {
                 conn.Open();
-                using (var cmd = new SQLiteCommand("INSERT INTO LocationIPs (LocationID, IPAddress) VALUES (@LocationID, @IPAddress)", conn))
+                using (var cmd = new SQLiteCommand("INSERT INTO LocationIPs (LocationID, IPAddress, WorkstationName) VALUES (@LocationID, @IPAddress, @WorkstationName)", conn))
                 {
                     cmd.Parameters.AddWithValue("@LocationID", locationId);
                     cmd.Parameters.AddWithValue("@IPAddress", ip);
+                    cmd.Parameters.AddWithValue("@WorkstationName", workstationName ?? "");
                     cmd.ExecuteNonQuery();
                 }
             }
@@ -2113,8 +2278,11 @@ namespace NmapInventory
 
     public class InputDialog : Form
     {
-        public string Value1 { get; private set; }
-        public string Value2 { get; private set; }
+        public string Value1 { get; set; }
+        public string Value2 { get; set; }
+
+        private TextBox txt1;
+        private TextBox txt2;
 
         public InputDialog(string title, string label1, string label2)
         {
@@ -2127,19 +2295,117 @@ namespace NmapInventory
             MinimizeBox = false;
 
             var lbl1 = new Label { Text = label1, Location = new Point(20, 20), AutoSize = true };
-            var txt1 = new TextBox { Location = new Point(20, 45), Width = 400 };
+            txt1 = new TextBox { Location = new Point(20, 45), Width = 400 };
 
             var lbl2 = new Label { Text = label2, Location = new Point(20, 80), AutoSize = true };
-            var txt2 = new TextBox { Location = new Point(20, 105), Width = 400, Multiline = true, Height = 50 };
+            txt2 = new TextBox { Location = new Point(20, 105), Width = 400, Multiline = true, Height = 50 };
 
             var okBtn = new Button { Text = "OK", Location = new Point(220, 165), Width = 90, DialogResult = DialogResult.OK, BackColor = Color.LightGreen };
             var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(320, 165), Width = 100, DialogResult = DialogResult.Cancel };
 
             okBtn.Click += (s, e) => { Value1 = txt1.Text; Value2 = txt2.Text; };
 
+            this.Load += (s, e) =>
+            {
+                txt1.Text = Value1 ?? "";
+                txt2.Text = Value2 ?? "";
+            };
+
             Controls.AddRange(new Control[] { lbl1, txt1, lbl2, txt2, okBtn, cancelBtn });
             AcceptButton = okBtn;
             CancelButton = cancelBtn;
+        }
+    }
+
+    public class IPImportDialog : Form
+    {
+        public List<(string IP, string Workstation)> SelectedIPs { get; private set; } = new List<(string, string)>();
+        private DataGridView ipGrid;
+
+        public IPImportDialog(DatabaseManager dbManager)
+        {
+            Text = "IPs aus Datenbank importieren";
+            Width = 600;
+            Height = 500;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+
+            var infoLabel = new Label
+            {
+                Text = "Wähle eine oder mehrere IP-Adressen aus der Geräte-Datenbank:",
+                Location = new Point(20, 20),
+                Width = 550,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold)
+            };
+
+            ipGrid = new DataGridView
+            {
+                Location = new Point(20, 50),
+                Width = 550,
+                Height = 350,
+                AllowUserToAddRows = false,
+                ReadOnly = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = true
+            };
+
+            ipGrid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "✓", Width = 30 });
+            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP-Adresse", Width = 150, ReadOnly = true });
+            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hostname (DB)", Width = 150, ReadOnly = true });
+            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Als Arbeitsplatz", Width = 200 });
+
+            // Lade IPs aus der Datenbank
+            var ips = dbManager.GetAllIPsFromDevices();
+            foreach (var ip in ips)
+            {
+                ipGrid.Rows.Add(false, ip.IP, ip.Hostname, ip.Hostname);
+            }
+
+            var selectAllBtn = new Button { Text = "Alle auswählen", Location = new Point(20, 410), Width = 120 };
+            selectAllBtn.Click += (s, e) =>
+            {
+                foreach (DataGridViewRow row in ipGrid.Rows)
+                    row.Cells[0].Value = true;
+            };
+
+            var deselectAllBtn = new Button { Text = "Alle abwählen", Location = new Point(150, 410), Width = 120 };
+            deselectAllBtn.Click += (s, e) =>
+            {
+                foreach (DataGridViewRow row in ipGrid.Rows)
+                    row.Cells[0].Value = false;
+            };
+
+            var okBtn = new Button { Text = "Importieren", Location = new Point(350, 410), Width = 100, BackColor = Color.LightGreen };
+            okBtn.Click += OkButton_Click;
+
+            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(460, 410), Width = 100, DialogResult = DialogResult.Cancel };
+
+            Controls.AddRange(new Control[] { infoLabel, ipGrid, selectAllBtn, deselectAllBtn, okBtn, cancelBtn });
+            AcceptButton = okBtn;
+            CancelButton = cancelBtn;
+        }
+
+        private void OkButton_Click(object sender, EventArgs e)
+        {
+            SelectedIPs.Clear();
+
+            foreach (DataGridViewRow row in ipGrid.Rows)
+            {
+                bool isChecked = row.Cells[0].Value != null && (bool)row.Cells[0].Value;
+                if (isChecked)
+                {
+                    string ip = row.Cells[1].Value?.ToString();
+                    string workstation = row.Cells[3].Value?.ToString() ?? "";
+
+                    if (!string.IsNullOrEmpty(ip))
+                        SelectedIPs.Add((ip, workstation));
+                }
+            }
+
+            DialogResult = DialogResult.OK;
+            Close();
         }
     }
 
