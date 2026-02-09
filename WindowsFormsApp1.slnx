@@ -1,3 +1,6 @@
 <Solution>
+  <Folder Name="/Projektmappenelemente/">
+    <File Path="../../../Downloads/files.zip" />
+  </Folder>
   <Project Path="WindowsFormsApp1/Inventarisierung.csproj" Id="c8c1fcda-fdda-46d8-9375-055691645fb3" />
 </Solution>
