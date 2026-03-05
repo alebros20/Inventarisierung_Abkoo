@@ -59,34 +59,44 @@ namespace NmapInventory
                         FOREIGN KEY(DeviceID) REFERENCES Devices(ID) ON DELETE CASCADE
                     );
 
-                    -- Kunden/Standorte (unverändert)
+                    -- Kunden (Top-Level)
                     CREATE TABLE IF NOT EXISTS Customers (
                         ID INTEGER PRIMARY KEY AUTOINCREMENT,
                         Name TEXT NOT NULL,
-                        Address TEXT
+                        Address TEXT,
+                        CreatedDate DATETIME DEFAULT CURRENT_TIMESTAMP
                     );
 
+                    -- Hierarchische Struktur: Kunde > Standort > Abteilung
                     CREATE TABLE IF NOT EXISTS Locations (
                         ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                        CustomerID INTEGER,
+                        CustomerID INTEGER NOT NULL,
+                        ParentID INTEGER,
                         Name TEXT NOT NULL,
                         Address TEXT,
-                        FOREIGN KEY(CustomerID) REFERENCES Customers(ID) ON DELETE CASCADE
+                        Level INTEGER DEFAULT 0,
+                        CreatedDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(CustomerID) REFERENCES Customers(ID) ON DELETE CASCADE,
+                        FOREIGN KEY(ParentID) REFERENCES Locations(ID) ON DELETE CASCADE
                     );
 
+                    -- IPs zugeordnet zu Abteilungen/Standorten
                     CREATE TABLE IF NOT EXISTS LocationIPs (
                         ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                        LocationID INTEGER,
+                        LocationID INTEGER NOT NULL,
                         IPAddress TEXT NOT NULL,
                         WorkstationName TEXT,
+                        AssignedDate DATETIME DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY(LocationID) REFERENCES Locations(ID) ON DELETE CASCADE
                     );";
 
                 using (var cmd = new SQLiteCommand(createTableQuery, conn))
                     cmd.ExecuteNonQuery();
 
-                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN FirstSeen DATETIME DEFAULT CURRENT_TIMESTAMP");
-                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN LastSeen DATETIME DEFAULT CURRENT_TIMESTAMP");
+                TryAlterTable(conn, "ALTER TABLE Customers ADD COLUMN CreatedDate DATETIME DEFAULT CURRENT_TIMESTAMP");
+                TryAlterTable(conn, "ALTER TABLE Locations ADD COLUMN Level INTEGER DEFAULT 0");
+                TryAlterTable(conn, "ALTER TABLE Locations ADD COLUMN ParentID INTEGER");
+                TryAlterTable(conn, "ALTER TABLE LocationIPs ADD COLUMN AssignedDate DATETIME DEFAULT CURRENT_TIMESTAMP");
             }
         }
 
@@ -104,13 +114,8 @@ namespace NmapInventory
                 conn.Open();
                 foreach (var dev in devices)
                 {
-                    // Prüfe ob Gerät bereits existiert
                     int deviceID = GetOrCreateDevice(conn, dev.IP, dev.Hostname);
-
-                    // Speichere Scan-Verlauf
                     SaveDeviceScanHistory(conn, deviceID, dev.Status, dev.Ports);
-
-                    // Update LastSeen
                     UpdateDeviceLastSeen(conn, deviceID);
                 }
             }
@@ -118,7 +123,6 @@ namespace NmapInventory
 
         private int GetOrCreateDevice(SQLiteConnection conn, string ip, string hostname)
         {
-            // Versuche Gerät zu finden
             using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE IP = @IP", conn))
             {
                 cmd.Parameters.AddWithValue("@IP", ip);
@@ -129,7 +133,6 @@ namespace NmapInventory
                 }
             }
 
-            // Gerät existiert nicht, erstelle es
             using (var cmd = new SQLiteCommand("INSERT INTO Devices (IP, Hostname) VALUES (@IP, @Hostname)", conn))
             {
                 cmd.Parameters.AddWithValue("@IP", ip);
@@ -137,7 +140,6 @@ namespace NmapInventory
                 cmd.ExecuteNonQuery();
             }
 
-            // Hole die neue ID
             using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE IP = @IP", conn))
             {
                 cmd.Parameters.AddWithValue("@IP", ip);
@@ -239,19 +241,15 @@ namespace NmapInventory
                 conn.Open();
                 foreach (var sw in software)
                 {
-                    // Finde das Gerät via IP oder Hostname
                     int deviceID = GetDeviceIDByName(conn, sw.PCName);
-                    if (deviceID <= 0) continue; // Gerät nicht gefunden
+                    if (deviceID <= 0) continue;
 
-                    // Prüfe auf Version-Änderung
                     string oldVersion = GetLastSoftwareVersion(conn, deviceID, sw.Name);
                     if (!string.IsNullOrEmpty(oldVersion) && oldVersion != sw.Version)
                     {
-                        // Version hat sich geändert - speichere in History
                         SaveSoftwareHistory(conn, deviceID, sw.Name, oldVersion, sw.Version);
                     }
 
-                    // Speichere Software (oder update)
                     SaveOrUpdateSoftware(conn, deviceID, sw);
                 }
             }
@@ -292,7 +290,6 @@ namespace NmapInventory
 
         private void SaveOrUpdateSoftware(SQLiteConnection conn, int deviceID, SoftwareInfo sw)
         {
-            // Prüfe ob Software bereits existiert
             using (var cmd = new SQLiteCommand("SELECT ID FROM DeviceSoftware WHERE DeviceID = @DeviceID AND Name = @Name", conn))
             {
                 cmd.Parameters.AddWithValue("@DeviceID", deviceID);
@@ -301,7 +298,6 @@ namespace NmapInventory
 
                 if (result != null)
                 {
-                    // Update
                     using (var updateCmd = new SQLiteCommand("UPDATE DeviceSoftware SET Version=@Version, Publisher=@Publisher, InstallDate=@InstallDate, Source=@Source, QueryTime=CURRENT_TIMESTAMP WHERE ID=@ID", conn))
                     {
                         updateCmd.Parameters.AddWithValue("@ID", Convert.ToInt32(result));
@@ -314,7 +310,6 @@ namespace NmapInventory
                 }
                 else
                 {
-                    // Insert
                     using (var insertCmd = new SQLiteCommand("INSERT INTO DeviceSoftware (DeviceID, Name, Version, Publisher, InstallLocation, InstallDate, Source) VALUES (@DeviceID, @Name, @Version, @Publisher, @InstallLocation, @InstallDate, @Source)", conn))
                     {
                         insertCmd.Parameters.AddWithValue("@DeviceID", deviceID);
@@ -380,7 +375,6 @@ namespace NmapInventory
 
                 foreach (var sw in softwareList)
                 {
-                    // Prüfe ob Update vorhanden ist
                     using (var cmd = new SQLiteCommand(@"
                         SELECT sh.ChangeTime 
                         FROM SoftwareHistory sh 
@@ -437,7 +431,7 @@ namespace NmapInventory
             }
         }
 
-        // === CUSTOMERS & LOCATIONS ===
+        // === CUSTOMERS ===
         public List<Customer> GetCustomers()
         {
             var customers = new List<Customer>();
@@ -457,29 +451,168 @@ namespace NmapInventory
             return customers;
         }
 
+        public void AddCustomer(string name, string address)
+            => ExecuteNonQuery($"INSERT INTO Customers (Name, Address) VALUES (@Name, @Address)", new[] { ("@Name", name), ("@Address", address ?? "") });
+
+        public void UpdateCustomer(int id, string name, string address)
+            => ExecuteNonQuery($"UPDATE Customers SET Name=@Name, Address=@Address WHERE ID=@ID", new[] { ("@ID", id.ToString()), ("@Name", name), ("@Address", address ?? "") });
+
+        public void DeleteCustomer(int id)
+            => ExecuteNonQuery($"DELETE FROM Customers WHERE ID=@ID", new[] { ("@ID", id.ToString()) });
+
+        // === LOCATIONS (HIERARCHISCH) ===
+        /// <summary>
+        /// Holt alle Top-Level Standorte für einen Kunden (ParentID = NULL)
+        /// </summary>
         public List<Location> GetLocationsByCustomer(int customerId)
+        {
+            return GetLocationsByCustomerAndParent(customerId, null);
+        }
+
+        /// <summary>
+        /// Holt alle Kinder-Standorte/Abteilungen für einen Parent-Standort
+        /// </summary>
+        public List<Location> GetChildLocations(int parentLocationId)
         {
             var locations = new List<Location>();
             using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
             {
                 conn.Open();
-                using (var cmd = new SQLiteCommand("SELECT ID, CustomerID, Name, Address FROM Locations WHERE CustomerID=@CustomerID ORDER BY Name", conn))
+                using (var cmd = new SQLiteCommand("SELECT ID, CustomerID, ParentID, Name, Address, Level FROM Locations WHERE ParentID = @ParentID ORDER BY Name", conn))
                 {
-                    cmd.Parameters.AddWithValue("@CustomerID", customerId);
+                    cmd.Parameters.AddWithValue("@ParentID", parentLocationId);
                     using (var reader = cmd.ExecuteReader())
                         while (reader.Read())
                             locations.Add(new Location
                             {
                                 ID = Convert.ToInt32(reader["ID"]),
                                 CustomerID = Convert.ToInt32(reader["CustomerID"]),
+                                ParentID = Convert.ToInt32(reader["ParentID"]),
                                 Name = reader["Name"].ToString(),
-                                Address = reader["Address"]?.ToString() ?? ""
+                                Address = reader["Address"]?.ToString() ?? "",
+                                Level = Convert.ToInt32(reader["Level"])
                             });
                 }
             }
             return locations;
         }
 
+        /// <summary>
+        /// Holt Standorte/Abteilungen mit optionalem Parent-Filter
+        /// </summary>
+        private List<Location> GetLocationsByCustomerAndParent(int customerId, int? parentId)
+        {
+            var locations = new List<Location>();
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                string query = parentId.HasValue
+                    ? "SELECT ID, CustomerID, ParentID, Name, Address, Level FROM Locations WHERE CustomerID = @CustomerID AND ParentID = @ParentID ORDER BY Name"
+                    : "SELECT ID, CustomerID, ParentID, Name, Address, Level FROM Locations WHERE CustomerID = @CustomerID AND ParentID IS NULL ORDER BY Name";
+
+                using (var cmd = new SQLiteCommand(query, conn))
+                {
+                    cmd.Parameters.AddWithValue("@CustomerID", customerId);
+                    if (parentId.HasValue)
+                        cmd.Parameters.AddWithValue("@ParentID", parentId.Value);
+
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read())
+                            locations.Add(new Location
+                            {
+                                ID = Convert.ToInt32(reader["ID"]),
+                                CustomerID = Convert.ToInt32(reader["CustomerID"]),
+                                ParentID = reader["ParentID"] == DBNull.Value ? -1 : Convert.ToInt32(reader["ParentID"]),
+                                Name = reader["Name"].ToString(),
+                                Address = reader["Address"]?.ToString() ?? "",
+                                Level = Convert.ToInt32(reader["Level"])
+                            });
+                }
+            }
+            return locations;
+        }
+
+        /// <summary>
+        /// Erstellt einen neuen Top-Level Standort
+        /// </summary>
+        public void AddLocation(int customerId, string name, string address)
+            => ExecuteNonQuery(
+                "INSERT INTO Locations (CustomerID, ParentID, Name, Address, Level) VALUES (@CustomerID, NULL, @Name, @Address, 0)",
+                new[] { ("@CustomerID", customerId.ToString()), ("@Name", name), ("@Address", address ?? "") });
+
+        /// <summary>
+        /// Erstellt eine Abteilung unter einem Standort/Parent
+        /// </summary>
+        public void AddChildLocation(int parentLocationId, string name, string address)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+
+                // Hole Parent-Infos um Level zu erhöhen
+                int parentLevel = 0;
+                int customerID = 0;
+                using (var cmd = new SQLiteCommand("SELECT Level, CustomerID FROM Locations WHERE ID = @ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", parentLocationId);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            parentLevel = Convert.ToInt32(reader["Level"]);
+                            customerID = Convert.ToInt32(reader["CustomerID"]);
+                        }
+                    }
+                }
+
+                // Erstelle Kind mit erhöhtem Level
+                using (var cmd = new SQLiteCommand("INSERT INTO Locations (CustomerID, ParentID, Name, Address, Level) VALUES (@CustomerID, @ParentID, @Name, @Address, @Level)", conn))
+                {
+                    cmd.Parameters.AddWithValue("@CustomerID", customerID);
+                    cmd.Parameters.AddWithValue("@ParentID", parentLocationId);
+                    cmd.Parameters.AddWithValue("@Name", name);
+                    cmd.Parameters.AddWithValue("@Address", address ?? "");
+                    cmd.Parameters.AddWithValue("@Level", parentLevel + 1);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void UpdateLocation(int id, string name, string address)
+            => ExecuteNonQuery($"UPDATE Locations SET Name=@Name, Address=@Address WHERE ID=@ID", new[] { ("@ID", id.ToString()), ("@Name", name), ("@Address", address ?? "") });
+
+        public void DeleteLocation(int id)
+            => ExecuteNonQuery($"DELETE FROM Locations WHERE ID=@ID", new[] { ("@ID", id.ToString()) });
+
+        public Location GetLocationByID(int id)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT ID, CustomerID, ParentID, Name, Address, Level FROM Locations WHERE ID = @ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", id);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            return new Location
+                            {
+                                ID = Convert.ToInt32(reader["ID"]),
+                                CustomerID = Convert.ToInt32(reader["CustomerID"]),
+                                ParentID = reader["ParentID"] == DBNull.Value ? -1 : Convert.ToInt32(reader["ParentID"]),
+                                Name = reader["Name"].ToString(),
+                                Address = reader["Address"]?.ToString() ?? "",
+                                Level = Convert.ToInt32(reader["Level"])
+                            };
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        // === LOCATION IPs ===
         public List<LocationIP> GetIPsWithWorkstationByLocation(int locationId)
         {
             var ips = new List<LocationIP>();
@@ -517,29 +650,31 @@ namespace NmapInventory
             return ips;
         }
 
-        public void AddCustomer(string name, string address)
-            => ExecuteNonQuery($"INSERT INTO Customers (Name, Address) VALUES (@Name, @Address)", new[] { ("@Name", name), ("@Address", address ?? "") });
-
-        public void UpdateCustomer(int id, string name, string address)
-            => ExecuteNonQuery($"UPDATE Customers SET Name=@Name, Address=@Address WHERE ID=@ID", new[] { ("@ID", id.ToString()), ("@Name", name), ("@Address", address ?? "") });
-
-        public void DeleteCustomer(int id)
-            => ExecuteNonQuery($"DELETE FROM Customers WHERE ID=@ID", new[] { ("@ID", id.ToString()) });
-
-        public void AddLocation(int customerId, string name, string address)
-            => ExecuteNonQuery($"INSERT INTO Locations (CustomerID, Name, Address) VALUES (@CustomerID, @Name, @Address)", new[] { ("@CustomerID", customerId.ToString()), ("@Name", name), ("@Address", address ?? "") });
-
-        public void UpdateLocation(int id, string name, string address)
-            => ExecuteNonQuery($"UPDATE Locations SET Name=@Name, Address=@Address WHERE ID=@ID", new[] { ("@ID", id.ToString()), ("@Name", name), ("@Address", address ?? "") });
-
-        public void DeleteLocation(int id)
-            => ExecuteNonQuery($"DELETE FROM Locations WHERE ID=@ID", new[] { ("@ID", id.ToString()) });
-
         public void AddIPToLocation(int locationId, string ip, string workstationName = "")
             => ExecuteNonQuery($"INSERT INTO LocationIPs (LocationID, IPAddress, WorkstationName) VALUES (@LocationID, @IPAddress, @WorkstationName)", new[] { ("@LocationID", locationId.ToString()), ("@IPAddress", ip), ("@WorkstationName", workstationName ?? "") });
 
         public void RemoveIPFromLocation(int locationId, string ip)
             => ExecuteNonQuery($"DELETE FROM LocationIPs WHERE LocationID=@LocationID AND IPAddress=@IPAddress", new[] { ("@LocationID", locationId.ToString()), ("@IPAddress", ip) });
+
+        /// <summary>
+        /// Holt alle IPs einer Location PLUS aller Child-Locations rekursiv
+        /// </summary>
+        public List<LocationIP> GetAllIPsRecursive(int locationId)
+        {
+            var allIPs = new List<LocationIP>();
+
+            // IPs der aktuellen Location
+            allIPs.AddRange(GetIPsWithWorkstationByLocation(locationId));
+
+            // Rekursiv alle Child-Locations durchsuchen
+            var children = GetChildLocations(locationId);
+            foreach (var child in children)
+            {
+                allIPs.AddRange(GetAllIPsRecursive(child.ID));
+            }
+
+            return allIPs;
+        }
 
         private void ExecuteNonQuery(string query, (string, string)[] parameters)
         {
