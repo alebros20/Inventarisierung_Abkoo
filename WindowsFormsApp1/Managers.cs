@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Management;
 using System.Text.RegularExpressions;
@@ -13,130 +12,188 @@ namespace NmapInventory
     {
         private string nmapPath = "nmap";
 
-        public ScanResult Scan(string target)
+        // ─────────────────────────────────────────────────────────
+        // 🔍 DISCOVERY SCAN — ARP, schnell, findet ALLE Geräte + MACs
+        // Funktioniert nur im lokalen Subnetz (Layer 2)
+        // ─────────────────────────────────────────────────────────
+        public ScanResult DiscoveryScan(string target)
         {
-            var devices = new List<DeviceInfo>();
-            string rawOutput = "";
-
-            try
-            {
-                var process = new ProcessStartInfo
-                {
-                    FileName = nmapPath,
-                    Arguments = $"-sn -PR {target}",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    CreateNoWindow = true
-                };
-
-                using (var proc = Process.Start(process))
-                {
-                    using (var reader = proc.StandardOutput)
-                        rawOutput = reader.ReadToEnd();
-                    proc.WaitForExit();
-                }
-
-                devices = ParseNmapOutput(rawOutput);
-            }
-            catch (Exception ex)
-            {
-                rawOutput = $"Fehler: {ex.Message}";
-            }
-
-            return new ScanResult { Devices = devices, RawOutput = rawOutput };
+            // -sn       kein Port-Scan
+            // -PR       ARP-Ping (Layer 2, findet alle Geräte inkl. stiller Hosts)
+            // --send-eth Ethernet-Frames direkt senden (sichert MAC-Erkennung)
+            // -T4       schneller Timing
+            return RunScan(target, "-sn -PR --send-eth -T4", ParseDiscoveryOutput);
         }
 
-        private List<DeviceInfo> ParseNmapOutput(string output)
+        // ─────────────────────────────────────────────────────────
+        // 🔬 DETAIL SCAN — Ports, Services, OS, Banner
+        // Läuft auf bekannten IPs aus dem Discovery-Scan
+        // ─────────────────────────────────────────────────────────
+        public ScanResult DetailScan(string targets)
+        {
+            // -sV       Service-Versionen
+            // -O        OS-Erkennung (braucht Admin)
+            // -sC       Standard-Skripte (Banner, SMB, HTTP-Titel...)
+            // -T4       schneller Timing
+            // --open    nur offene Ports
+            return RunScan(targets, "-sV -O -sC -T4 --open", ParseDetailOutput);
+        }
+
+        // Rückwärtskompatibilität — ruft DiscoveryScan auf
+        public ScanResult Scan(string target) => DiscoveryScan(target);
+
+        // ─────────────────────────────────────────────────────────
+        // Interner Runner
+        // ─────────────────────────────────────────────────────────
+        private ScanResult RunScan(string targets, string args, Func<string, List<DeviceInfo>> parser)
+        {
+            string rawOut = "";
+            var devices = new List<DeviceInfo>();
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = nmapPath,
+                    Arguments = $"{args} {targets}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                using (var proc = Process.Start(psi))
+                {
+                    rawOut = proc.StandardOutput.ReadToEnd();
+                    proc.WaitForExit();
+                }
+                devices = parser(rawOut);
+            }
+            catch (Exception ex) { rawOut = $"Fehler: {ex.Message}"; }
+            return new ScanResult { Devices = devices, RawOutput = rawOut };
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // Parser für Discovery-Scan (schnell, nur IP/MAC/Vendor)
+        // ─────────────────────────────────────────────────────────
+        private List<DeviceInfo> ParseDiscoveryOutput(string output)
         {
             var devices = new List<DeviceInfo>();
-            var lines = output.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
+            var lines = output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
 
-            // Aktueller Block
-            string currentIP = "";
-            string currentDnsName = "";
-            string currentMac = "";
-            string currentVendor = "";
-            bool currentIsUp = false;
+            string ip = "", dnsName = "", mac = "", vendor = "";
+            bool isUp = false;
 
-            // Hilfsmethode: fertigen Block in Liste übernehmen
-            void FlushDevice()
+            void Flush()
             {
-                if (!currentIsUp || string.IsNullOrEmpty(currentIP)) return;
-
-                // Priorität: 1. Hersteller  2. DNS-Name  3. IP
+                if (!isUp || string.IsNullOrEmpty(ip)) return;
                 string hostname;
-                if (!string.IsNullOrEmpty(currentVendor) && currentVendor != "Unknown")
-                    hostname = !string.IsNullOrEmpty(currentMac)
-                        ? $"{currentVendor} ({currentMac})"
-                        : $"{currentVendor} ({currentIP})";
-                else if (!string.IsNullOrEmpty(currentDnsName))
-                    hostname = currentDnsName;
+                if (!string.IsNullOrEmpty(vendor) && vendor != "Unknown")
+                    hostname = !string.IsNullOrEmpty(mac) ? $"{vendor} ({mac})" : $"{vendor} ({ip})";
+                else if (!string.IsNullOrEmpty(dnsName))
+                    hostname = dnsName;
                 else
-                    hostname = currentIP;
+                    hostname = ip;
 
                 devices.Add(new DeviceInfo
                 {
-                    IP = currentIP,
+                    IP = ip,
                     Hostname = hostname,
+                    MacAddress = mac,
+                    Vendor = vendor,
                     Status = "up",
                     Ports = "-",
-                    MacAddress = currentMac
+                    OpenPorts = new List<NmapPort>()
                 });
             }
 
             foreach (var line in lines)
             {
-                // Neuer Block beginnt → vorherigen abschließen
                 if (line.Contains("Nmap scan report for"))
                 {
-                    FlushDevice();
+                    Flush();
+                    ip = ""; dnsName = ""; mac = ""; vendor = ""; isUp = false;
 
-                    // Reset
-                    currentIP = ""; currentDnsName = ""; currentMac = "";
-                    currentVendor = ""; currentIsUp = false;
-
-                    // "for speedport.ip (192.168.2.1)" oder "for 192.168.2.206"
-                    var withHost = Regex.Match(line, @"for\s+(\S+)\s+\((\d+\.\d+\.\d+\.\d+)\)");
-                    if (withHost.Success)
-                    {
-                        currentDnsName = withHost.Groups[1].Value;
-                        currentIP = withHost.Groups[2].Value;
-                    }
-                    else
-                    {
-                        var ipOnly = Regex.Match(line, @"(\d+\.\d+\.\d+\.\d+)");
-                        if (ipOnly.Success) currentIP = ipOnly.Groups[1].Value;
-                    }
+                    var m = Regex.Match(line, @"for\s+(\S+)\s+\((\d+\.\d+\.\d+\.\d+)\)");
+                    if (m.Success) { dnsName = m.Groups[1].Value; ip = m.Groups[2].Value; }
+                    else { var m2 = Regex.Match(line, @"(\d+\.\d+\.\d+\.\d+)"); if (m2.Success) ip = m2.Groups[1].Value; }
                 }
-                // "Host is up" — merken, noch nicht sofort speichern
                 else if (line.Contains("Host is up"))
-                {
-                    currentIsUp = true;
-                }
-                // "MAC Address: xx:xx:xx (Vendor)" — kommt NACH "Host is up"
+                    isUp = true;
                 else if (line.Contains("MAC Address:"))
                 {
-                    var macMatch = Regex.Match(line,
-                        @"MAC Address:\s+([0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5})\s+\(([^)]+)\)");
-                    if (macMatch.Success)
-                    {
-                        currentMac = macMatch.Groups[1].Value;
-                        currentVendor = macMatch.Groups[2].Value;
-                    }
-                    else
-                    {
-                        var macOnly = Regex.Match(line, @"([0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5})");
-                        if (macOnly.Success) currentMac = macOnly.Groups[1].Value;
-                    }
+                    var m = Regex.Match(line,
+                        @"MAC Address:\s+([0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5})\s*(?:\(([^)]*)\))?");
+                    if (m.Success) { mac = m.Groups[1].Value; vendor = m.Groups[2].Value; }
                 }
             }
+            Flush(); // letztes Gerät
+            return devices;
+        }
 
-            // Letzten Block nicht vergessen
-            FlushDevice();
+        // ─────────────────────────────────────────────────────────
+        // Parser für Detail-Scan (Ports, Services, OS, Banner)
+        // ─────────────────────────────────────────────────────────
+        private List<DeviceInfo> ParseDetailOutput(string output)
+        {
+            var devices = new List<DeviceInfo>();
+            var blocks = Regex.Split(output, @"(?=Nmap scan report for )");
 
+            foreach (var block in blocks)
+            {
+                if (!block.Contains("Nmap scan report for")) continue;
+                var device = new DeviceInfo { OpenPorts = new List<NmapPort>(), Status = "up" };
+                var lines = block.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+                foreach (var line in lines)
+                {
+                    if (line.StartsWith("Nmap scan report for"))
+                    {
+                        var m = Regex.Match(line, @"for\s+(\S+)\s+\((\d+\.\d+\.\d+\.\d+)\)");
+                        if (m.Success) { device.Hostname = m.Groups[1].Value; device.IP = m.Groups[2].Value; }
+                        else { var m2 = Regex.Match(line, @"(\d+\.\d+\.\d+\.\d+)"); if (m2.Success) device.IP = m2.Groups[1].Value; }
+                    }
+                    else if (line.Contains("MAC Address:"))
+                    {
+                        var m = Regex.Match(line,
+                            @"MAC Address:\s+([0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5})\s*(?:\(([^)]*)\))?");
+                        if (m.Success) { device.MacAddress = m.Groups[1].Value; device.Vendor = m.Groups[2].Value; }
+                    }
+                    else if (Regex.IsMatch(line, @"^\d+/(tcp|udp)\s+\w+"))
+                    {
+                        var m = Regex.Match(line, @"^(\d+)/(tcp|udp)\s+(\S+)\s+(\S+)\s*(.*)$");
+                        if (m.Success)
+                            device.OpenPorts.Add(new NmapPort
+                            {
+                                Port = int.Parse(m.Groups[1].Value),
+                                Protocol = m.Groups[2].Value,
+                                State = m.Groups[3].Value,
+                                Service = m.Groups[4].Value,
+                                Version = m.Groups[5].Value.Trim()
+                            });
+                    }
+                    else if (line.TrimStart().StartsWith("| banner:") && device.OpenPorts.Count > 0)
+                        device.OpenPorts[device.OpenPorts.Count - 1].Banner =
+                            line.Substring(line.IndexOf("| banner:") + 9).Trim();
+                    else if (line.StartsWith("OS details:"))
+                        device.OSDetails = line.Substring(11).Trim();
+                    else if (line.StartsWith("Running:"))
+                        device.OS = line.Substring(8).Trim();
+                    else if (line.StartsWith("Aggressive OS guesses:") && string.IsNullOrEmpty(device.OS))
+                        device.OS = line.Substring(22).Trim();
+                }
+
+                if (!string.IsNullOrEmpty(device.IP))
+                {
+                    if (string.IsNullOrEmpty(device.Hostname)) device.Hostname = device.IP;
+                    device.Ports = device.OpenPorts.Count > 0
+                        ? string.Join(", ", device.OpenPorts.Select(p => $"{p.Port}/{p.Protocol} {p.Service}"))
+                        : "-";
+                    devices.Add(device);
+                }
+            }
             return devices;
         }
     }
+
 
     public class HardwareManager
     {

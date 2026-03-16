@@ -13,7 +13,7 @@ namespace NmapInventory
         // === UI COMPONENTS ===
         private TabControl tabControl;
         private TextBox networkTextBox;
-        private Button scanButton, hardwareButton, exportButton, remoteHardwareButton;
+        private Button scanButton, detailScanButton, hardwareButton, exportButton, remoteHardwareButton;
         private Label statusLabel;
         private DataGridView deviceTable, softwareGridView, dbDeviceTable, dbSoftwareTable;
         private TextBox rawOutputTextBox, hardwareInfoTextBox;
@@ -87,19 +87,22 @@ namespace NmapInventory
             newLocationButton = new Button { Text = "+ Neuer Standort", Location = new Point(310, 43), Width = 140, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             newLocationButton.Click += (s, e) => CreateNewLocation();
 
-            scanButton = new Button { Text = "Scan starten", Location = new Point(460, 8), Width = 120, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            scanButton = new Button { Text = "🔍 Netzwerk scannen", Location = new Point(460, 8), Width = 150, Height = 28, BackColor = Color.LightBlue, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             scanButton.Click += (s, e) => StartScan();
 
-            hardwareButton = new Button { Text = "Hardware/Software", Location = new Point(590, 8), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            detailScanButton = new Button { Text = "🔬 Details scannen", Location = new Point(620, 8), Width = 145, Height = 28, BackColor = Color.LightYellow, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            detailScanButton.Click += (s, e) => StartDetailScan();
+
+            hardwareButton = new Button { Text = "Hardware/Software", Location = new Point(775, 8), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             hardwareButton.Click += (s, e) => StartHardwareQuery();
 
-            exportButton = new Button { Text = "Exportieren", Location = new Point(760, 8), Width = 120, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            exportButton = new Button { Text = "Exportieren", Location = new Point(945, 8), Width = 110, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             exportButton.Click += (s, e) => ExportData();
 
-            remoteHardwareButton = new Button { Text = "Remote Hardware", Location = new Point(890, 8), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            remoteHardwareButton = new Button { Text = "Remote Hardware", Location = new Point(1065, 8), Width = 150, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             remoteHardwareButton.Click += (s, e) => StartRemoteHardwareQuery();
 
-            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, hardwareButton, exportButton, remoteHardwareButton });
+            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, detailScanButton, hardwareButton, exportButton, remoteHardwareButton });
             return topPanel;
         }
 
@@ -459,38 +462,126 @@ namespace NmapInventory
         // === SCAN ===
         // =========================================================
 
+        /// <summary>
+        /// 🔍 NETZWERK SCANNEN — ARP-Discovery, schnell (~5 Sek)
+        /// Findet ALLE Geräte im Subnetz inkl. MAC-Adressen.
+        /// Befehl: nmap -sn -PR --send-eth
+        /// </summary>
         private void StartScan()
         {
             if (selectedLocationID <= 0) { MessageBox.Show("Bitte wähle einen Standort aus!", "Warnung", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             scanButton.Enabled = false;
-            statusLabel.Text = "Scan läuft...";
+            detailScanButton.Enabled = false;
+            statusLabel.Text = "🔍 Netzwerk-Discovery läuft (ARP)...";
+
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
                     var oldDevices = currentDevices.ToList();
                     lastScanDevices = oldDevices;
-                    var result = nmapScanner.Scan(networkTextBox.Text);
+                    var result = nmapScanner.DiscoveryScan(networkTextBox.Text);
                     Invoke(new MethodInvoker(() =>
                     {
                         rawOutputTextBox.Text = result.RawOutput;
                         currentDevices = result.Devices;
-                        dbManager.SaveDevices(currentDevices);  // speichert IP, Hostname, MAC und History
+                        dbManager.SaveDevices(currentDevices);
                         SyncDevicesToLocation(selectedLocationID, currentDevices);
                         DisplayDevicesWithStatus(currentDevices, oldDevices);
                         LoadDatabaseDevices();
 
-                        // Detail-Panel automatisch aktualisieren falls gerade ein Gerät angezeigt wird
                         if (!string.IsNullOrEmpty(currentDisplayedIP))
                             ShowDeviceDetails(currentDisplayedIP);
 
-                        statusLabel.Text = "Scan abgeschlossen";
+                        int found = currentDevices.Count;
+                        int withMac = currentDevices.Count(d => !string.IsNullOrEmpty(d.MacAddress));
+                        statusLabel.Text = $"✅ Discovery abgeschlossen — {found} Geräte gefunden, {withMac} mit MAC-Adresse";
                         scanButton.Enabled = true;
+                        detailScanButton.Enabled = true;
                     }));
                 }
                 catch (Exception ex)
                 {
-                    Invoke(new MethodInvoker(() => { MessageBox.Show($"Fehler: {ex.Message}"); statusLabel.Text = "Fehler beim Scan"; scanButton.Enabled = true; }));
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        MessageBox.Show($"Fehler: {ex.Message}");
+                        statusLabel.Text = "Fehler beim Scan";
+                        scanButton.Enabled = true;
+                        detailScanButton.Enabled = true;
+                    }));
+                }
+            });
+        }
+
+        /// <summary>
+        /// 🔬 DETAILS SCANNEN — Service-Versionen, OS, Ports, Banner
+        /// Läuft auf bereits bekannten Geräten aus dem letzten Discovery-Scan.
+        /// Befehl: nmap -sV -O -sC -T4 --open
+        /// </summary>
+        private void StartDetailScan()
+        {
+            var targets = currentDevices.Select(d => d.IP).ToList();
+            if (targets.Count == 0)
+            {
+                MessageBox.Show("Bitte zuerst einen Netzwerk-Scan durchführen!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            scanButton.Enabled = false;
+            detailScanButton.Enabled = false;
+            statusLabel.Text = $"🔬 Detail-Scan läuft für {targets.Count} Geräte (kann mehrere Minuten dauern)...";
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    // Alle bekannten IPs als Ziel übergeben
+                    string targetList = string.Join(" ", targets);
+                    var result = nmapScanner.DetailScan(targetList);
+
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        rawOutputTextBox.Text = result.RawOutput;
+
+                        // Detail-Infos (OS, Ports, Banner) in DB speichern
+                        // Discovery-Geräte mit Detail-Infos zusammenführen
+                        foreach (var detailed in result.Devices)
+                        {
+                            dbManager.SaveNmapDetails(detailed);
+
+                            // Hostname aktualisieren falls jetzt bekannt
+                            var existing = currentDevices.FirstOrDefault(d => d.IP == detailed.IP);
+                            if (existing != null)
+                            {
+                                existing.OS = detailed.OS;
+                                existing.OSDetails = detailed.OSDetails;
+                                existing.OpenPorts = detailed.OpenPorts;
+                                existing.Ports = detailed.Ports;
+                            }
+                        }
+
+                        dbManager.SaveDevices(currentDevices);
+                        LoadDatabaseDevices();
+
+                        if (!string.IsNullOrEmpty(currentDisplayedIP))
+                            ShowDeviceDetails(currentDisplayedIP);
+
+                        int withOS = result.Devices.Count(d => !string.IsNullOrEmpty(d.OS));
+                        int withPorts = result.Devices.Count(d => d.OpenPorts?.Count > 0);
+                        statusLabel.Text = $"✅ Detail-Scan abgeschlossen — {withOS} OS erkannt, {withPorts} Geräte mit offenen Ports";
+                        scanButton.Enabled = true;
+                        detailScanButton.Enabled = true;
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        MessageBox.Show($"Fehler: {ex.Message}");
+                        statusLabel.Text = "Fehler beim Detail-Scan";
+                        scanButton.Enabled = true;
+                        detailScanButton.Enabled = true;
+                    }));
                 }
             });
         }
@@ -816,7 +907,7 @@ namespace NmapInventory
         /// </summary>
         private void ShowDeviceDetails(string ipAddress)
         {
-            currentDisplayedIP = ipAddress;  // merken für Refresh-Button
+            currentDisplayedIP = ipAddress;
 
             var devicePanel = FindControl<Panel>("deviceDetailPanel");
             var titleLabel = FindControl<Label>("deviceTitleLabel");
@@ -825,50 +916,75 @@ namespace NmapInventory
             var swGrid = FindControl<DataGridView>("deviceSoftwareGrid");
             if (devicePanel == null || hwBox == null || swGrid == null) return;
 
-            // Gerät aus DB suchen
-            var allDevices = dbManager.LoadDevices("Alle");
-            var device = allDevices.FirstOrDefault(d => d.IP == ipAddress);
-
-            if (device == null)
-            {
-                devicePanel.Visible = false;
-                return;
-            }
+            var device = dbManager.LoadDevices("Alle").FirstOrDefault(d => d.IP == ipAddress);
+            if (device == null) { devicePanel.Visible = false; return; }
 
             // Info-Zeile
-            infoLabel.Text = $"IP: {device.IP}   |   MAC: {device.MacAddress ?? "unbekannt"}   |   Hostname: {device.Hostname ?? "-"}   |   Zuletzt gesehen: {device.Zeitstempel}";
+            infoLabel.Text = $"IP: {device.IP}   |   MAC: {device.MacAddress ?? "unbekannt"}   |   " +
+                             $"Hostname: {device.Hostname ?? "-"}   |   Zuletzt gesehen: {device.Zeitstempel}";
 
-            // --- Hardware ---
-            // Hardware wird als freier Text in DeviceScanHistory gespeichert — hier holen wir
-            // den letzten Scan-Status + Ports als Zusammenfassung
-            var hwText = new System.Text.StringBuilder();
-            hwText.AppendLine($"=== Hardware-Informationen ===");
-            hwText.AppendLine($"IP-Adresse : {device.IP}");
-            hwText.AppendLine($"MAC-Adresse: {device.MacAddress ?? "nicht ermittelt"}");
-            hwText.AppendLine($"Hostname   : {device.Hostname ?? "-"}");
-            hwText.AppendLine($"Status     : {device.Status ?? "-"}");
-            hwText.AppendLine($"Letzte Scan-Zeit: {device.Zeitstempel}");
-            if (!string.IsNullOrEmpty(device.Ports) && device.Ports != "-")
+            // ── Hardware / Nmap ──────────────────────────────────
+            var hw = new System.Text.StringBuilder();
+            hw.AppendLine("=== Geräteinformationen ===");
+            hw.AppendLine($"IP-Adresse  : {device.IP}");
+            hw.AppendLine($"MAC-Adresse : {device.MacAddress ?? "nicht ermittelt"}");
+            hw.AppendLine($"Hostname    : {device.Hostname ?? "-"}");
+            hw.AppendLine($"Status      : {device.Status ?? "-"}");
+            hw.AppendLine($"Letzte Scan : {device.Zeitstempel}");
+
+            // OS aus letztem Nmap-Detail
+            var nmapDetail = dbManager.GetLatestNmapDetail(ipAddress);
+            if (nmapDetail != null)
             {
-                hwText.AppendLine();
-                hwText.AppendLine("=== Offene Ports ===");
-                foreach (var port in device.Ports.Split(','))
-                    hwText.AppendLine($"  {port.Trim()}");
+                if (!string.IsNullOrEmpty(nmapDetail.OS))
+                {
+                    hw.AppendLine();
+                    hw.AppendLine("=== Betriebssystem ===");
+                    hw.AppendLine($"OS          : {nmapDetail.OS}");
+                    if (!string.IsNullOrEmpty(nmapDetail.OSDetails))
+                        hw.AppendLine($"Details     : {nmapDetail.OSDetails}");
+                }
+                if (!string.IsNullOrEmpty(nmapDetail.Vendor))
+                    hw.AppendLine($"Hersteller  : {nmapDetail.Vendor}");
+                hw.AppendLine($"Letzter Scan: {nmapDetail.ScanTime:dd.MM.yyyy HH:mm}");
             }
 
-            // MAC-History anhängen
+            // Ports aus DB
+            var ports = dbManager.GetPortsByDevice(ipAddress);
+            if (ports.Count > 0)
+            {
+                hw.AppendLine();
+                hw.AppendLine("=== Offene Ports ===");
+                hw.AppendLine($"{"Port",-10} {"Protokoll",-10} {"Status",-10} {"Service",-20} {"Version"}");
+                hw.AppendLine(new string('-', 75));
+                foreach (var p in ports)
+                {
+                    hw.AppendLine($"{p.Port}/{p.Protocol,-7} {"open",-10} {p.Service,-20} {p.Version}");
+                    if (!string.IsNullOrEmpty(p.Banner))
+                        hw.AppendLine($"  └ Banner: {p.Banner}");
+                }
+            }
+            else if (!string.IsNullOrEmpty(device.Ports) && device.Ports != "-")
+            {
+                hw.AppendLine();
+                hw.AppendLine("=== Ports (kompakt) ===");
+                foreach (var p in device.Ports.Split(','))
+                    hw.AppendLine($"  {p.Trim()}");
+            }
+
+            // MAC-History
             var macHistory = dbManager.GetDeviceMacHistory(device.ID);
             if (macHistory.Count > 0)
             {
-                hwText.AppendLine();
-                hwText.AppendLine("=== MAC-History ===");
+                hw.AppendLine();
+                hw.AppendLine("=== MAC-History ===");
                 foreach (var entry in macHistory)
-                    hwText.AppendLine($"  {entry.Item3:dd.MM.yyyy HH:mm}   {entry.Item1,-20}  {entry.Item2}");
+                    hw.AppendLine($"  {entry.Item3:dd.MM.yyyy HH:mm}   {entry.Item1,-20}  {entry.Item2}");
             }
 
-            hwBox.Text = hwText.ToString();
+            hwBox.Text = hw.ToString();
 
-            // --- Software ---
+            // ── Software ─────────────────────────────────────────
             swGrid.Rows.Clear();
             var software = dbManager.LoadSoftware("Alle")
                 .Where(s => s.PCName == device.Hostname || s.PCName == device.IP)
@@ -879,12 +995,12 @@ namespace NmapInventory
             {
                 foreach (var sw in software)
                     swGrid.Rows.Add(sw.Name, sw.Version ?? "", sw.Publisher ?? "", sw.InstallDate ?? "");
-                titleLabel.Text = $"💻 Geräteinformationen  ({software.Count} Software-Einträge)";
+                titleLabel.Text = $"💻 Geräteinformationen  ({ports.Count} Ports, {software.Count} Software-Einträge)";
             }
             else
             {
                 swGrid.Rows.Add("Keine Software-Einträge vorhanden", "", "", "");
-                titleLabel.Text = "💻 Geräteinformationen";
+                titleLabel.Text = $"💻 Geräteinformationen  ({ports.Count} Ports)";
             }
 
             devicePanel.Visible = true;

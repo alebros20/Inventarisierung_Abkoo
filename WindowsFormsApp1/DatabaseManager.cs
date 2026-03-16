@@ -71,7 +71,7 @@ namespace NmapInventory
                         Address TEXT,
                         CreatedDate DATETIME DEFAULT CURRENT_TIMESTAMP
                     );
--- Teil 1
+
                     -- Selbstreferenzierende Tabelle fuer beliebig tiefe Hierarchie:
                     -- Level 0 = Standort (Root)
                     -- Level 1 = Abteilung
@@ -101,7 +101,36 @@ namespace NmapInventory
                         UNIQUE(LocationID, DeviceID)
                     );
 
-                    -- Beibehaltung der alten LocationIPs fuer Rueckwaertskompatibilitaet
+                    -- Vollstaendige Nmap-Scan-Details pro Gerät
+                    CREATE TABLE IF NOT EXISTS DeviceNmapDetails (
+                        ID          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID    INTEGER NOT NULL,
+                        OS          TEXT,
+                        OSDetails   TEXT,
+                        Vendor      TEXT,
+                        Ports       TEXT,
+                        PortsJson   TEXT,
+                        RawOutput   TEXT,
+                        ScanTime    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(DeviceID) REFERENCES Devices(ID) ON DELETE CASCADE
+                    );
+
+                    -- Einzelne Ports pro Scan-Detail
+                    CREATE TABLE IF NOT EXISTS DevicePorts (
+                        ID          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID    INTEGER NOT NULL,
+                        Port        INTEGER NOT NULL,
+                        Protocol    TEXT,
+                        State       TEXT,
+                        Service     TEXT,
+                        Version     TEXT,
+                        Banner      TEXT,
+                        ScanTime    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(DeviceID) REFERENCES Devices(ID) ON DELETE CASCADE
+                    );
+
+                    -- Index fuer schnellen Port-Lookup
+                    CREATE INDEX IF NOT EXISTS idx_device_ports ON DevicePorts(DeviceID);
                     CREATE TABLE IF NOT EXISTS LocationIPs (
                         ID INTEGER PRIMARY KEY AUTOINCREMENT,
                         LocationID INTEGER NOT NULL,
@@ -242,6 +271,160 @@ namespace NmapInventory
                 cmd.Parameters.AddWithValue("@ID", deviceID);
                 cmd.ExecuteNonQuery();
             }
+        }
+
+        // =========================================================
+        // === NMAP SCAN DETAILS ===
+        // =========================================================
+
+        /// <summary>
+        /// Speichert vollständige Nmap-Scan-Details (OS, Ports, Banner, Raw) für ein Gerät.
+        /// Alte Ports werden ersetzt — immer aktueller Stand.
+        /// </summary>
+        public void SaveNmapDetails(DeviceInfo device)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                int deviceID = GetOrCreateDevice(conn, device.IP, device.Hostname, device.MacAddress);
+
+                // Nmap-Detail-Eintrag anlegen
+                using (var cmd = new SQLiteCommand(@"
+                    INSERT INTO DeviceNmapDetails (DeviceID, OS, OSDetails, Vendor, Ports, PortsJson, RawOutput)
+                    VALUES (@DeviceID, @OS, @OSDetails, @Vendor, @Ports, @PortsJson, @RawOutput)", conn))
+                {
+                    cmd.Parameters.AddWithValue("@DeviceID", deviceID);
+                    cmd.Parameters.AddWithValue("@OS", device.OS ?? "");
+                    cmd.Parameters.AddWithValue("@OSDetails", device.OSDetails ?? "");
+                    cmd.Parameters.AddWithValue("@Vendor", device.Vendor ?? "");
+                    cmd.Parameters.AddWithValue("@Ports", device.Ports ?? "");
+                    cmd.Parameters.AddWithValue("@PortsJson", BuildPortsJson(device.OpenPorts));
+                    cmd.Parameters.AddWithValue("@RawOutput", "");
+                    cmd.ExecuteNonQuery();
+                }
+
+                // Alte Ports löschen und neu schreiben
+                using (var cmd = new SQLiteCommand("DELETE FROM DevicePorts WHERE DeviceID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@ID", deviceID);
+                    cmd.ExecuteNonQuery();
+                }
+
+                foreach (var port in device.OpenPorts)
+                {
+                    using (var cmd = new SQLiteCommand(@"
+                        INSERT INTO DevicePorts (DeviceID, Port, Protocol, State, Service, Version, Banner)
+                        VALUES (@DeviceID, @Port, @Protocol, @State, @Service, @Version, @Banner)", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@DeviceID", deviceID);
+                        cmd.Parameters.AddWithValue("@Port", port.Port);
+                        cmd.Parameters.AddWithValue("@Protocol", port.Protocol ?? "tcp");
+                        cmd.Parameters.AddWithValue("@State", port.State ?? "open");
+                        cmd.Parameters.AddWithValue("@Service", port.Service ?? "");
+                        cmd.Parameters.AddWithValue("@Version", port.Version ?? "");
+                        cmd.Parameters.AddWithValue("@Banner", port.Banner ?? "");
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+
+                // OS auch in Devices-Tabelle aktualisieren
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN OS TEXT");
+                using (var cmd = new SQLiteCommand("UPDATE Devices SET OS=@OS WHERE ID=@ID", conn))
+                {
+                    cmd.Parameters.AddWithValue("@OS", device.OS ?? "");
+                    cmd.Parameters.AddWithValue("@ID", deviceID);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Lädt die letzten Nmap-Details für ein Gerät per IP.
+        /// </summary>
+        public NmapScanDetail GetLatestNmapDetail(string ip)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand(@"
+                    SELECT n.ID, n.DeviceID, d.IP, d.Hostname, d.MacAddress, n.OS, n.OSDetails,
+                           n.Vendor, n.Ports, n.PortsJson, n.ScanTime
+                    FROM DeviceNmapDetails n
+                    JOIN Devices d ON n.DeviceID = d.ID
+                    WHERE d.IP = @IP
+                    ORDER BY n.ScanTime DESC LIMIT 1", conn))
+                {
+                    cmd.Parameters.AddWithValue("@IP", ip);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        if (reader.Read())
+                            return new NmapScanDetail
+                            {
+                                ID = Convert.ToInt32(reader["ID"]),
+                                DeviceID = Convert.ToInt32(reader["DeviceID"]),
+                                IP = reader["IP"].ToString(),
+                                Hostname = reader["Hostname"]?.ToString(),
+                                MacAddress = reader["MacAddress"]?.ToString(),
+                                OS = reader["OS"]?.ToString(),
+                                OSDetails = reader["OSDetails"]?.ToString(),
+                                Vendor = reader["Vendor"]?.ToString(),
+                                Ports = reader["Ports"]?.ToString(),
+                                PortsJson = reader["PortsJson"]?.ToString(),
+                                ScanTime = Convert.ToDateTime(reader["ScanTime"])
+                            };
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Lädt alle gespeicherten Ports für ein Gerät (aktuellster Stand).
+        /// </summary>
+        public List<NmapPort> GetPortsByDevice(string ip)
+        {
+            var ports = new List<NmapPort>();
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand(@"
+                    SELECT dp.Port, dp.Protocol, dp.State, dp.Service, dp.Version, dp.Banner
+                    FROM DevicePorts dp
+                    JOIN Devices d ON dp.DeviceID = d.ID
+                    WHERE d.IP = @IP
+                    ORDER BY dp.Port", conn))
+                {
+                    cmd.Parameters.AddWithValue("@IP", ip);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read())
+                            ports.Add(new NmapPort
+                            {
+                                Port = Convert.ToInt32(reader["Port"]),
+                                Protocol = reader["Protocol"]?.ToString(),
+                                State = reader["State"]?.ToString(),
+                                Service = reader["Service"]?.ToString(),
+                                Version = reader["Version"]?.ToString(),
+                                Banner = reader["Banner"]?.ToString()
+                            });
+                }
+            }
+            return ports;
+        }
+
+        private string BuildPortsJson(List<NmapPort> ports)
+        {
+            if (ports == null || ports.Count == 0) return "[]";
+            var sb = new System.Text.StringBuilder("[");
+            for (int i = 0; i < ports.Count; i++)
+            {
+                var p = ports[i];
+                sb.Append($"{{\"port\":{p.Port},\"proto\":\"{p.Protocol}\",\"state\":\"{p.State}\"," +
+                           $"\"service\":\"{p.Service}\",\"version\":\"{p.Version?.Replace("\"", "'")}\"," +
+                           $"\"banner\":\"{p.Banner?.Replace("\"", "'")}\"}}");
+                if (i < ports.Count - 1) sb.Append(",");
+            }
+            sb.Append("]");
+            return sb.ToString();
         }
 
         // =========================================================
@@ -610,7 +793,6 @@ namespace NmapInventory
                 string query = @"
                     WITH RECURSIVE loc_tree AS (
                         -- Startknoten: alle Root-Standorte des Kunden
--- Teil 2
                         SELECT ID, CustomerID, ParentID, Name, Address, Level
                         FROM Locations
                         WHERE CustomerID = @CustomerID AND ParentID IS NULL
@@ -766,8 +948,6 @@ namespace NmapInventory
         /// <summary>
         /// Laedt alle direkt zugewiesenen Geraete einer Location (nicht rekursiv).
         /// </summary>
-        
-        
         public List<DatabaseDevice> GetDevicesByLocation(int locationId)
         {
             var devices = new List<DatabaseDevice>();
@@ -802,7 +982,6 @@ namespace NmapInventory
         /// <summary>
         /// Laedt alle Geraete einer Location UND aller ihrer Unterabteilungen (rekursiv).
         /// </summary>
-        /// Teil 3
         public List<DatabaseDevice> GetDevicesByLocationRecursive(int locationId)
         {
             var devices = new List<DatabaseDevice>();
