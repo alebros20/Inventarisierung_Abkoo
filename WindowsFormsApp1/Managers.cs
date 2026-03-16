@@ -26,17 +26,42 @@ namespace NmapInventory
         }
 
         // ─────────────────────────────────────────────────────────
-        // 🔬 DETAIL SCAN — Ports, Services, OS, Banner
-        // Läuft auf bekannten IPs aus dem Discovery-Scan
+        // 🔬 FERNWARTUNGS-SCAN — optimiert für gemischte RDP+SSH /24
+        //
+        // Strategie: Geräte in Gruppen à 10 scannen → Fortschritt sichtbar
+        // Ports: RDP, SSH, VNC, WinRM, SMB, HTTP/S + Telnet
+        // Timing: --min-parallelism 10 --max-retries 1 für Geschwindigkeit
         // ─────────────────────────────────────────────────────────
         public ScanResult DetailScan(string targets)
         {
-            // -sV       Service-Versionen
-            // -O        OS-Erkennung (braucht Admin)
-            // -sC       Standard-Skripte (Banner, SMB, HTTP-Titel...)
-            // -T4       schneller Timing
-            // --open    nur offene Ports
-            return RunScan(targets, "-sV -O -sC -T4 --open", ParseDetailOutput);
+            const string REMOTE_PORTS =
+                "22,23,80,443,445,3389,5900,5985,5986,8080,8443";
+
+            const string SCRIPTS =
+                "rdp-info,ssh-hostkey,vnc-info,smb-os-discovery,http-title";
+
+            // --min-parallelism 10  gleichzeitig 10 Hosts scannen
+            // --max-retries 1       kein langes Warten auf nicht-antwortende Ports
+            // --host-timeout 60s    nach 60s zum nächsten Host
+            // -sV --version-light   schnelle Versions-Erkennung (kein Full-Probe)
+            string args = $"-sV --version-light -O -T4 --open " +
+                          $"-p {REMOTE_PORTS} --script={SCRIPTS} " +
+                          $"--min-parallelism 10 --max-retries 1 --host-timeout 60s";
+
+            return RunScan(targets, args, ParseDetailOutput);
+        }
+
+        // Scan pro einzelnem Gerät (für Fortschrittsanzeige in MainForm)
+        public ScanResult DetailScanSingle(string ip)
+        {
+            const string REMOTE_PORTS =
+                "22,23,80,443,445,3389,5900,5985,5986,8080,8443";
+            const string SCRIPTS =
+                "rdp-info,ssh-hostkey,vnc-info,smb-os-discovery,http-title";
+            string args = $"-sV --version-light -O -T4 --open " +
+                          $"-p {REMOTE_PORTS} --script={SCRIPTS} " +
+                          $"--max-retries 1 --host-timeout 30s";
+            return RunScan(ip, args, ParseDetailOutput);
         }
 
         // Rückwärtskompatibilität — ruft DiscoveryScan auf
@@ -87,10 +112,16 @@ namespace NmapInventory
                 if (!isUp || string.IsNullOrEmpty(ip)) return;
                 string hostname;
                 if (!string.IsNullOrEmpty(vendor) && vendor != "Unknown")
-                    hostname = !string.IsNullOrEmpty(mac) ? $"{vendor} ({mac})" : $"{vendor} ({ip})";
+                    // Hersteller bekannt → "Arcadyan (78:DD:12:D2:10:3E)"
+                    hostname = !string.IsNullOrEmpty(mac) ? $"{vendor} ({mac})" : vendor;
                 else if (!string.IsNullOrEmpty(dnsName))
+                    // DNS-Name bekannt → "speedport.ip"
                     hostname = dnsName;
+                else if (!string.IsNullOrEmpty(mac))
+                    // Nur MAC bekannt → MAC als Hostname
+                    hostname = mac;
                 else
+                    // Nichts bekannt → IP als letzter Fallback
                     hostname = ip;
 
                 devices.Add(new DeviceInfo
@@ -130,7 +161,7 @@ namespace NmapInventory
         }
 
         // ─────────────────────────────────────────────────────────
-        // Parser für Detail-Scan (Ports, Services, OS, Banner)
+        // Parser für Detail-Scan (Ports, Services, OS, Skript-Ergebnisse)
         // ─────────────────────────────────────────────────────────
         private List<DeviceInfo> ParseDetailOutput(string output)
         {
@@ -143,54 +174,127 @@ namespace NmapInventory
                 var device = new DeviceInfo { OpenPorts = new List<NmapPort>(), Status = "up" };
                 var lines = block.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
 
+                NmapPort lastPort = null;  // für Skript-Ausgaben dem richtigen Port zuordnen
+
                 foreach (var line in lines)
                 {
+                    // IP / Hostname
                     if (line.StartsWith("Nmap scan report for"))
                     {
                         var m = Regex.Match(line, @"for\s+(\S+)\s+\((\d+\.\d+\.\d+\.\d+)\)");
                         if (m.Success) { device.Hostname = m.Groups[1].Value; device.IP = m.Groups[2].Value; }
                         else { var m2 = Regex.Match(line, @"(\d+\.\d+\.\d+\.\d+)"); if (m2.Success) device.IP = m2.Groups[1].Value; }
                     }
+
+                    // MAC + Vendor
                     else if (line.Contains("MAC Address:"))
                     {
                         var m = Regex.Match(line,
                             @"MAC Address:\s+([0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5})\s*(?:\(([^)]*)\))?");
                         if (m.Success) { device.MacAddress = m.Groups[1].Value; device.Vendor = m.Groups[2].Value; }
                     }
+
+                    // Port-Zeile: 3389/tcp open ms-wbt-server Microsoft Terminal Services
                     else if (Regex.IsMatch(line, @"^\d+/(tcp|udp)\s+\w+"))
                     {
                         var m = Regex.Match(line, @"^(\d+)/(tcp|udp)\s+(\S+)\s+(\S+)\s*(.*)$");
                         if (m.Success)
-                            device.OpenPorts.Add(new NmapPort
+                        {
+                            lastPort = new NmapPort
                             {
                                 Port = int.Parse(m.Groups[1].Value),
                                 Protocol = m.Groups[2].Value,
                                 State = m.Groups[3].Value,
                                 Service = m.Groups[4].Value,
                                 Version = m.Groups[5].Value.Trim()
-                            });
+                            };
+                            device.OpenPorts.Add(lastPort);
+                        }
                     }
-                    else if (line.TrimStart().StartsWith("| banner:") && device.OpenPorts.Count > 0)
-                        device.OpenPorts[device.OpenPorts.Count - 1].Banner =
-                            line.Substring(line.IndexOf("| banner:") + 9).Trim();
+
+                    // Skript-Ausgaben — dem letzten Port zuordnen
+                    else if (line.TrimStart().StartsWith("|") && lastPort != null)
+                    {
+                        string scriptLine = line.TrimStart('|', '_', ' ', '-');
+
+                        // RDP-Info
+                        if (scriptLine.StartsWith("rdp-info:") || scriptLine.Contains("Remote Desktop Protocol"))
+                            AppendBanner(lastPort, scriptLine);
+
+                        // SSH Host Key
+                        else if (scriptLine.StartsWith("ssh-hostkey:") || scriptLine.Contains("ssh-rsa") || scriptLine.Contains("ecdsa"))
+                            AppendBanner(lastPort, scriptLine.Trim());
+
+                        // VNC Info
+                        else if (scriptLine.Contains("VNC") || scriptLine.StartsWith("vnc-info:"))
+                            AppendBanner(lastPort, scriptLine);
+
+                        // SMB OS Discovery
+                        else if (scriptLine.Contains("OS:") || scriptLine.Contains("Computer name:") ||
+                                 scriptLine.Contains("Domain name:") || scriptLine.Contains("Workgroup:"))
+                        {
+                            AppendBanner(lastPort, scriptLine.Trim());
+                            // OS aus SMB extrahieren
+                            var osMatch = Regex.Match(scriptLine, @"OS:\s*(.+)");
+                            if (osMatch.Success && string.IsNullOrEmpty(device.OS))
+                                device.OS = osMatch.Groups[1].Value.Trim();
+                        }
+
+                        // HTTP Title
+                        else if (scriptLine.StartsWith("http-title:") || scriptLine.Contains("Title:"))
+                            AppendBanner(lastPort, scriptLine.Trim());
+
+                        // Banner (generisch)
+                        else if (scriptLine.StartsWith("banner:"))
+                            AppendBanner(lastPort, scriptLine.Substring(7).Trim());
+                    }
+
+                    // OS-Erkennung
                     else if (line.StartsWith("OS details:"))
                         device.OSDetails = line.Substring(11).Trim();
                     else if (line.StartsWith("Running:"))
                         device.OS = line.Substring(8).Trim();
                     else if (line.StartsWith("Aggressive OS guesses:") && string.IsNullOrEmpty(device.OS))
-                        device.OS = line.Substring(22).Trim();
+                        device.OS = Regex.Match(line.Substring(22), @"^([^(]+)").Groups[1].Value.Trim();
                 }
 
                 if (!string.IsNullOrEmpty(device.IP))
                 {
                     if (string.IsNullOrEmpty(device.Hostname)) device.Hostname = device.IP;
                     device.Ports = device.OpenPorts.Count > 0
-                        ? string.Join(", ", device.OpenPorts.Select(p => $"{p.Port}/{p.Protocol} {p.Service}"))
-                        : "-";
+                        ? string.Join(", ", device.OpenPorts.Select(p =>
+                            $"{p.Port}/{p.Protocol} {GetFernwartungsLabel(p.Port, p.Service)}"))
+                        : "Keine Fernwartungs-Ports offen";
                     devices.Add(device);
                 }
             }
             return devices;
+        }
+
+        // Kurzlabel für bekannte Fernwartungs-Ports
+        private string GetFernwartungsLabel(int port, string service)
+        {
+            switch (port)
+            {
+                case 22: return "SSH";
+                case 23: return "Telnet ⚠️";
+                case 80: return "HTTP";
+                case 443: return "HTTPS";
+                case 445: return "SMB";
+                case 3389: return "RDP 🖥";
+                case 5900: return "VNC";
+                case 5985: return "WinRM";
+                case 5986: return "WinRM-SSL";
+                default: return service;
+            }
+        }
+
+        private void AppendBanner(NmapPort port, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            port.Banner = string.IsNullOrEmpty(port.Banner)
+                ? text
+                : port.Banner + " | " + text;
         }
     }
 

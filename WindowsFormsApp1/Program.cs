@@ -45,6 +45,18 @@ namespace NmapInventory
             dbManager.InitializeDatabase();
             LoadCustomerTree();
             ApplyAutoSizing();
+
+            this.Load += (s, e) => RestoreSplitterPosition();
+        }
+
+        private void RestoreSplitterPosition()
+        {
+            var split = Controls.Find("customerSplitContainer", true)
+                                .FirstOrDefault() as SplitContainer;
+            if (split == null) return;
+
+            // Mittig — halbe Breite des SplitContainers
+            split.SplitterDistance = split.Width / 2;
         }
 
         private void ApplyAutoSizing()
@@ -75,7 +87,7 @@ namespace NmapInventory
 
         private Panel CreateTopPanel()
         {
-            Panel topPanel = new Panel { Dock = DockStyle.Top, Height = 100, BackColor = Color.LightGray };
+            Panel topPanel = new Panel { Dock = DockStyle.Top, Height = 100, BackColor = SystemColors.Control };
 
             var networkLabel = new Label { Text = "Netzwerk:", Location = new Point(10, 10), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             networkTextBox = new TextBox { Text = "192.168.2.0/24", Location = new Point(100, 8), Width = 200, Font = new Font("Segoe UI", 10) };
@@ -87,10 +99,10 @@ namespace NmapInventory
             newLocationButton = new Button { Text = "+ Neuer Standort", Location = new Point(310, 43), Width = 140, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             newLocationButton.Click += (s, e) => CreateNewLocation();
 
-            scanButton = new Button { Text = "🔍 Netzwerk scannen", Location = new Point(460, 8), Width = 150, Height = 28, BackColor = Color.LightBlue, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            scanButton = new Button { Text = "🔍 Netzwerk scannen", Location = new Point(460, 8), Width = 150, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             scanButton.Click += (s, e) => StartScan();
 
-            detailScanButton = new Button { Text = "🔬 Details scannen", Location = new Point(620, 8), Width = 145, Height = 28, BackColor = Color.LightYellow, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            detailScanButton = new Button { Text = "🔬 Fernwartungs-Scan", Location = new Point(620, 8), Width = 155, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             detailScanButton.Click += (s, e) => StartDetailScan();
 
             hardwareButton = new Button { Text = "Hardware/Software", Location = new Point(775, 8), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
@@ -125,7 +137,7 @@ namespace NmapInventory
 
         private TabPage CreateDeviceTab()
         {
-            Panel devicePanel = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = Color.WhiteSmoke, Padding = new Padding(10) };
+            Panel devicePanel = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = SystemColors.Control, Padding = new Padding(10) };
             devicePanel.Controls.AddRange(new Control[] {
                 new Label { Text = "Legende:", Location = new Point(10, 10), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) },
                 new Label { Text = "●", Location = new Point(90, 10), Font = new Font("Arial", 16), ForeColor = Color.Green, AutoSize = true },
@@ -169,7 +181,7 @@ namespace NmapInventory
 
         private TabPage CreateHardwareTab()
         {
-            Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.LightSteelBlue, Padding = new Padding(10) };
+            Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = SystemColors.Control, Padding = new Padding(10) };
             panel.Controls.AddRange(new Control[] {
                 new Label { Name = "hardwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue },
                 new Label { Name = "hardwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray }
@@ -183,7 +195,7 @@ namespace NmapInventory
 
         private TabPage CreateSoftwareTab()
         {
-            Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.LightSteelBlue, Padding = new Padding(10) };
+            Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = SystemColors.Control, Padding = new Padding(10) };
             panel.Controls.AddRange(new Control[] {
                 new Label { Name = "softwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue },
                 new Label { Name = "softwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray }
@@ -264,7 +276,14 @@ namespace NmapInventory
         private TabPage CreateCustomerLocationTab()
         {
             var tab = new TabPage("Kunden / Standorte");
-            var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 320 };
+            var split = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                SplitterDistance = 320,
+                SplitterWidth = 5,
+                IsSplitterFixed = false,
+                Name = "customerSplitContainer"
+            };
 
             // --- Linke Seite: TreeView + Buttons ---
             var treeView = new TreeView { Name = "customerTreeView", Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
@@ -377,8 +396,8 @@ namespace NmapInventory
                 Text = "🔄 Aktualisieren",
                 Location = new Point(480, 2),
                 Width = 150,
-                Height = 26,
-                BackColor = Color.LightSteelBlue,
+                Height = 24,
+                BackColor = SystemColors.Control,
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
             refreshDeviceBtn.Click += (s, e) =>
@@ -387,12 +406,59 @@ namespace NmapInventory
                     ShowDeviceDetails(currentDisplayedIP);
             };
 
+            // --- Hostname bearbeiten ---
+            var hostnameLabel = new Label
+            {
+                Text = "Hostname:",
+                Location = new Point(10, 32),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9)
+            };
+            var hostnameBox = new TextBox
+            {
+                Name = "deviceHostnameBox",
+                Location = new Point(78, 29),
+                Width = 300,
+                Font = new Font("Segoe UI", 9)
+            };
+            var saveHostnameBtn = new Button
+            {
+                Text = "💾 Speichern",
+                Location = new Point(385, 28),
+                Width = 100,
+                Height = 24,
+                Font = new Font("Segoe UI", 9)
+            };
+            saveHostnameBtn.Click += (s, e) =>
+            {
+                if (string.IsNullOrWhiteSpace(hostnameBox.Text) ||
+                    string.IsNullOrEmpty(currentDisplayedIP)) return;
+                dbManager.UpdateDeviceHostname(currentDisplayedIP, hostnameBox.Text.Trim());
+                statusLabel.Text = $"Hostname gesetzt: {hostnameBox.Text.Trim()}";
+                ShowDeviceDetails(currentDisplayedIP);
+                LoadCustomerTree();
+            };
+            var resetHostnameBtn = new Button
+            {
+                Text = "↺ Auto",
+                Location = new Point(492, 28),
+                Width = 60,
+                Height = 24,
+                Font = new Font("Segoe UI", 9)
+            };
+            resetHostnameBtn.Click += (s, e) =>
+            {
+                if (string.IsNullOrEmpty(currentDisplayedIP)) return;
+                dbManager.ResetCustomHostname(currentDisplayedIP);
+                statusLabel.Text = $"Hostname wird beim nächsten Scan automatisch gesetzt";
+            };
+
             // Gerät Info-Zeile (IP / MAC / Hostname)
             var deviceInfoLabel = new Label
             {
                 Name = "deviceInfoLabel",
                 Text = "",
-                Location = new Point(10, 30),
+                Location = new Point(10, 57),
                 Size = new Size(630, 20),
                 Font = new Font("Segoe UI", 9),
                 ForeColor = Color.DarkSlateGray
@@ -402,9 +468,9 @@ namespace NmapInventory
             var deviceTabs = new TabControl
             {
                 Name = "deviceTabControl",
-                Location = new Point(10, 55),
+                Location = new Point(10, 80),
                 Width = 630,
-                Height = 430,
+                Height = 400,
                 Font = new Font("Segoe UI", 10)
             };
 
@@ -418,7 +484,7 @@ namespace NmapInventory
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
                 Font = new Font("Consolas", 9),
-                BackColor = Color.WhiteSmoke
+                BackColor = SystemColors.Control
             };
             hwPage.Controls.Add(hwBox);
 
@@ -443,7 +509,11 @@ namespace NmapInventory
             deviceTabs.TabPages.Add(hwPage);
             deviceTabs.TabPages.Add(swPage);
 
-            devicePanel.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn, deviceInfoLabel, deviceTabs });
+            devicePanel.Controls.AddRange(new Control[] {
+                deviceTitleLabel, refreshDeviceBtn,
+                hostnameLabel, hostnameBox, saveHostnameBtn, resetHostnameBtn,
+                deviceInfoLabel, deviceTabs
+            });
 
             panel.Controls.AddRange(new Control[] {
                 detailsLabel, nameLabel, nameTextBox, addressLabel, addressTextBox, saveBtn,
@@ -514,75 +584,86 @@ namespace NmapInventory
         }
 
         /// <summary>
-        /// 🔬 DETAILS SCANNEN — Service-Versionen, OS, Ports, Banner
-        /// Läuft auf bereits bekannten Geräten aus dem letzten Discovery-Scan.
-        /// Befehl: nmap -sV -O -sC -T4 --open
+        /// 🔬 FERNWARTUNGS-SCAN — scannt jedes Gerät einzeln mit Fortschrittsanzeige.
+        /// Ports: RDP 3389, SSH 22, VNC 5900, WinRM 5985/5986, SMB 445, HTTP/S
         /// </summary>
         private void StartDetailScan()
         {
             var targets = currentDevices.Select(d => d.IP).ToList();
+
+            // Fallback: IPs aus DB wenn noch kein Discovery-Scan gemacht
+            if (targets.Count == 0)
+                targets = dbManager.GetAllIPsFromDevices().Select(d => d.IP).ToList();
+
             if (targets.Count == 0)
             {
-                MessageBox.Show("Bitte zuerst einen Netzwerk-Scan durchführen!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Keine Geräte gefunden.\nBitte zuerst einen Netzwerk-Scan durchführen!",
+                    "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
             scanButton.Enabled = false;
             detailScanButton.Enabled = false;
-            statusLabel.Text = $"🔬 Detail-Scan läuft für {targets.Count} Geräte (kann mehrere Minuten dauern)...";
+            statusLabel.Text = $"🔬 Fernwartungs-Scan startet für {targets.Count} Geräte...";
 
             System.Threading.Tasks.Task.Run(() =>
             {
-                try
+                int total = targets.Count;
+                int done = 0;
+                int withRDP = 0, withSSH = 0, withVNC = 0;
+                var rawAll = new System.Text.StringBuilder();
+
+                foreach (var ip in targets)
                 {
-                    // Alle bekannten IPs als Ziel übergeben
-                    string targetList = string.Join(" ", targets);
-                    var result = nmapScanner.DetailScan(targetList);
-
                     Invoke(new MethodInvoker(() =>
+                        statusLabel.Text =
+                            $"🔬 {done}/{total}  RDP:{withRDP}  SSH:{withSSH}  VNC:{withVNC}  — scanne {ip} ..."));
+
+                    try
                     {
-                        rawOutputTextBox.Text = result.RawOutput;
+                        var result = nmapScanner.DetailScanSingle(ip);
+                        rawAll.AppendLine(result.RawOutput);
 
-                        // Detail-Infos (OS, Ports, Banner) in DB speichern
-                        // Discovery-Geräte mit Detail-Infos zusammenführen
-                        foreach (var detailed in result.Devices)
+                        foreach (var device in result.Devices)
                         {
-                            dbManager.SaveNmapDetails(detailed);
+                            dbManager.SaveNmapDetails(device);
 
-                            // Hostname aktualisieren falls jetzt bekannt
-                            var existing = currentDevices.FirstOrDefault(d => d.IP == detailed.IP);
+                            if (device.OpenPorts.Any(p => p.Port == 3389)) withRDP++;
+                            if (device.OpenPorts.Any(p => p.Port == 22)) withSSH++;
+                            if (device.OpenPorts.Any(p => p.Port == 5900)) withVNC++;
+
+                            var existing = currentDevices.FirstOrDefault(d => d.IP == device.IP);
                             if (existing != null)
                             {
-                                existing.OS = detailed.OS;
-                                existing.OSDetails = detailed.OSDetails;
-                                existing.OpenPorts = detailed.OpenPorts;
-                                existing.Ports = detailed.Ports;
+                                existing.OS = device.OS;
+                                existing.OSDetails = device.OSDetails;
+                                existing.OpenPorts = device.OpenPorts;
+                                existing.Ports = device.Ports;
                             }
                         }
+                    }
+                    catch { /* Einzelgerät fehlgeschlagen → weitermachen */ }
 
-                        dbManager.SaveDevices(currentDevices);
-                        LoadDatabaseDevices();
-
-                        if (!string.IsNullOrEmpty(currentDisplayedIP))
-                            ShowDeviceDetails(currentDisplayedIP);
-
-                        int withOS = result.Devices.Count(d => !string.IsNullOrEmpty(d.OS));
-                        int withPorts = result.Devices.Count(d => d.OpenPorts?.Count > 0);
-                        statusLabel.Text = $"✅ Detail-Scan abgeschlossen — {withOS} OS erkannt, {withPorts} Geräte mit offenen Ports";
-                        scanButton.Enabled = true;
-                        detailScanButton.Enabled = true;
-                    }));
+                    done++;
                 }
-                catch (Exception ex)
+
+                Invoke(new MethodInvoker(() =>
                 {
-                    Invoke(new MethodInvoker(() =>
-                    {
-                        MessageBox.Show($"Fehler: {ex.Message}");
-                        statusLabel.Text = "Fehler beim Detail-Scan";
-                        scanButton.Enabled = true;
-                        detailScanButton.Enabled = true;
-                    }));
-                }
+                    rawOutputTextBox.Text = rawAll.ToString();
+                    dbManager.SaveDevices(currentDevices);
+                    LoadDatabaseDevices();
+                    DisplayDevicesWithStatus(currentDevices, lastScanDevices);
+
+                    if (!string.IsNullOrEmpty(currentDisplayedIP))
+                        ShowDeviceDetails(currentDisplayedIP);
+
+                    statusLabel.Text =
+                        $"✅ Fernwartungs-Scan abgeschlossen — {total} Geräte  |  " +
+                        $"RDP 🖥: {withRDP}  SSH: {withSSH}  VNC: {withVNC}";
+
+                    scanButton.Enabled = true;
+                    detailScanButton.Enabled = true;
+                }));
             });
         }
 
@@ -591,34 +672,34 @@ namespace NmapInventory
             var location = dbManager.GetLocationByID(locationID);
             if (location == null) { statusLabel.Text = "Fehler: Standort nicht gefunden!"; return; }
 
-            // Bereits zugewiesene IPs und MACs ermitteln
-            var currentIPs = new HashSet<string>(
-                dbManager.GetIPsWithWorkstationByLocation(locationID).Select(ip => ip.IPAddress));
+            // Bereits zugewiesene IPs dieser Location
+            var assignedIPs = new HashSet<string>(
+                dbManager.GetIPsWithWorkstationByLocation(locationID).Select(x => x.IPAddress));
 
-            // Alle MACs die bereits in Devices-Tabelle unter dieser Location stecken
-            var allLocationDevices = dbManager.GetAllIPsFromDevices();
-            var assignedMACs = new HashSet<string>(
-                allLocationDevices
-                    .Join(dbManager.GetIPsWithWorkstationByLocation(locationID),
-                          d => d.IP, l => l.IPAddress, (d, l) => d)
-                    .Select(d => dbManager.LoadDevices("Alle")
-                        .FirstOrDefault(x => x.IP == d.IP)?.MacAddress ?? "")
-                    .Where(m => !string.IsNullOrEmpty(m)));
+            // Alle MACs die bereits irgendwo in der DB als Gerät existieren
+            var knownMACs = new HashSet<string>(
+                dbManager.LoadDevices("Alle")
+                    .Where(d => !string.IsNullOrEmpty(d.MacAddress))
+                    .Select(d => d.MacAddress));
 
             int added = 0, skippedIP = 0, skippedMAC = 0;
 
             foreach (var device in devices)
             {
-                // Gleiche IP bereits vorhanden → überspringen
-                if (currentIPs.Contains(device.IP))
+                // IP bereits dieser Location zugewiesen → überspringen
+                if (assignedIPs.Contains(device.IP))
                 {
                     skippedIP++;
                     continue;
                 }
 
-                // Gleiche MAC bereits vorhanden → nur LastSeen aktualisieren, nicht neu anlegen
-                if (!string.IsNullOrEmpty(device.MacAddress) && assignedMACs.Contains(device.MacAddress))
+                // MAC bereits bekannt → Gerät existiert schon unter anderer/gleicher IP
+                // Nur LastSeen wurde bereits via SaveDevices aktualisiert
+                if (!string.IsNullOrEmpty(device.MacAddress) && knownMACs.Contains(device.MacAddress))
                 {
+                    // IP trotzdem zur Location hinzufügen falls das Gerät umgezogen ist (neue IP)
+                    dbManager.AddIPToLocation(locationID, device.IP, device.Hostname ?? "");
+                    added++;
                     skippedMAC++;
                     continue;
                 }
@@ -627,9 +708,9 @@ namespace NmapInventory
                 added++;
             }
 
-            var msg = $"{added} neue Geräte zu '{location.Name}' hinzugefügt";
-            if (skippedIP > 0) msg += $", {skippedIP} IP bereits vorhanden";
-            if (skippedMAC > 0) msg += $", {skippedMAC} MAC bereits bekannt (nur LastSeen aktualisiert)";
+            var msg = $"{added} Geräte zu '{location.Name}' synchronisiert";
+            if (skippedIP > 0) msg += $", {skippedIP} bereits vorhanden";
+            if (skippedMAC > 0) msg += $", {skippedMAC} per MAC-Adresse erkannt";
             statusLabel.Text = msg;
         }
 
@@ -800,6 +881,10 @@ namespace NmapInventory
             var treeView = FindControl<TreeView>("customerTreeView");
             if (treeView == null) return;
             treeView.Nodes.Clear();
+
+            // Einmal laden — nicht für jede Location neu
+            var allDevices = dbManager.LoadDevices("Alle");
+
             foreach (var customer in dbManager.GetCustomers())
             {
                 var customerNode = new TreeNode($"👤 {customer.Name}")
@@ -808,14 +893,15 @@ namespace NmapInventory
                 };
                 var locations = dbManager.GetLocationsByCustomer(customer.ID);
                 for (int i = 0; i < locations.Count; i++)
-                    AddLocationNodeRecursive(customerNode, locations[i], $"S{i + 1}");
+                    AddLocationNodeRecursive(customerNode, locations[i], $"S{i + 1}", allDevices);
                 treeView.Nodes.Add(customerNode);
             }
             treeView.ExpandAll();
             LoadLocationCombo();
         }
 
-        private void AddLocationNodeRecursive(TreeNode parentNode, Location location, string shortID)
+        private void AddLocationNodeRecursive(TreeNode parentNode, Location location, string shortID,
+            List<DatabaseDevice> allDevices)
         {
             string icon = location.Level == 0 ? "🏢" : "📂";
             var locationNode = new TreeNode($"[{shortID}] {icon} {location.Name}")
@@ -832,14 +918,19 @@ namespace NmapInventory
                 string childID = location.Level == 0
                     ? $"{shortID}.A{i + 1}"
                     : $"{shortID}.{i + 1}";
-                AddLocationNodeRecursive(locationNode, children[i], childID);
+                AddLocationNodeRecursive(locationNode, children[i], childID, allDevices);
             }
 
             foreach (var ip in dbManager.GetIPsWithWorkstationByLocation(location.ID))
             {
-                string display = string.IsNullOrEmpty(ip.WorkstationName)
+                // Hostname aus Devices bevorzugen (kann manuell gesetzt sein)
+                var device = allDevices?.FirstOrDefault(d => d.IP == ip.IPAddress);
+                string label = device?.Hostname ?? ip.WorkstationName ?? "";
+
+                string display = string.IsNullOrEmpty(label)
                     ? $"📍 {ip.IPAddress}"
-                    : $"💻 {ip.WorkstationName} ({ip.IPAddress})";
+                    : $"💻 {label} ({ip.IPAddress})";
+
                 locationNode.Nodes.Add(new TreeNode(display)
                 {
                     Tag = new NodeData { Type = "IP", ID = ip.ID, Data = ip }
@@ -919,9 +1010,11 @@ namespace NmapInventory
             var device = dbManager.LoadDevices("Alle").FirstOrDefault(d => d.IP == ipAddress);
             if (device == null) { devicePanel.Visible = false; return; }
 
-            // Info-Zeile
+            // Info-Zeile + Hostname-Box befüllen
             infoLabel.Text = $"IP: {device.IP}   |   MAC: {device.MacAddress ?? "unbekannt"}   |   " +
                              $"Hostname: {device.Hostname ?? "-"}   |   Zuletzt gesehen: {device.Zeitstempel}";
+            var hostnameBox = FindControl<TextBox>("deviceHostnameBox");
+            if (hostnameBox != null) hostnameBox.Text = device.Hostname ?? "";
 
             // ── Hardware / Nmap ──────────────────────────────────
             var hw = new System.Text.StringBuilder();
@@ -953,23 +1046,52 @@ namespace NmapInventory
             var ports = dbManager.GetPortsByDevice(ipAddress);
             if (ports.Count > 0)
             {
+                // Fernwartungs-Übersicht zuerst
                 hw.AppendLine();
-                hw.AppendLine("=== Offene Ports ===");
-                hw.AppendLine($"{"Port",-10} {"Protokoll",-10} {"Status",-10} {"Service",-20} {"Version"}");
-                hw.AppendLine(new string('-', 75));
+                hw.AppendLine("=== Fernwartungs-Zugänge ===");
+                var remoteMap = new Dictionary<int, string>
+                {
+                    {22,   "SSH"}, {23, "Telnet ⚠️"}, {3389, "RDP 🖥"},
+                    {5900, "VNC"}, {5985, "WinRM"},   {5986, "WinRM-SSL"}
+                };
+                bool anyRemote = false;
                 foreach (var p in ports)
                 {
-                    hw.AppendLine($"{p.Port}/{p.Protocol,-7} {"open",-10} {p.Service,-20} {p.Version}");
+                    if (remoteMap.ContainsKey(p.Port))
+                    {
+                        hw.AppendLine($"  ✅ {remoteMap[p.Port],-15} Port {p.Port}  {p.Version}");
+                        if (!string.IsNullOrEmpty(p.Banner))
+                            hw.AppendLine($"     └ {p.Banner}");
+                        anyRemote = true;
+                    }
+                }
+                if (!anyRemote)
+                    hw.AppendLine("  ❌ Keine Fernwartungs-Ports gefunden");
+
+                // Alle Ports tabellarisch
+                hw.AppendLine();
+                hw.AppendLine("=== Alle offenen Ports ===");
+                hw.AppendLine($"  {"Port",-10} {"Protokoll",-6} {"Service",-20} {"Version"}");
+                hw.AppendLine($"  {new string('-', 65)}");
+                foreach (var p in ports)
+                {
+                    hw.AppendLine($"  {p.Port + "/" + p.Protocol,-10} {"open",-6} {p.Service,-20} {p.Version}");
                     if (!string.IsNullOrEmpty(p.Banner))
-                        hw.AppendLine($"  └ Banner: {p.Banner}");
+                        hw.AppendLine($"     └ {p.Banner}");
                 }
             }
             else if (!string.IsNullOrEmpty(device.Ports) && device.Ports != "-")
             {
                 hw.AppendLine();
-                hw.AppendLine("=== Ports (kompakt) ===");
+                hw.AppendLine("=== Ports (aus letztem Scan) ===");
                 foreach (var p in device.Ports.Split(','))
                     hw.AppendLine($"  {p.Trim()}");
+            }
+            else
+            {
+                hw.AppendLine();
+                hw.AppendLine("ℹ️  Noch kein Fernwartungs-Scan durchgeführt.");
+                hw.AppendLine("   → '🔬 Fernwartungs-Scan' klicken für Port-Details.");
             }
 
             // MAC-History

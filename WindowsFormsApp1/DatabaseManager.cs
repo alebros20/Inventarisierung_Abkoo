@@ -144,6 +144,7 @@ namespace NmapInventory
                     cmd.ExecuteNonQuery();
 
                 TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN MacAddress TEXT UNIQUE");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN CustomHostname INTEGER DEFAULT 0");
                 TryAlterTable(conn, "ALTER TABLE Customers ADD COLUMN CreatedDate DATETIME DEFAULT CURRENT_TIMESTAMP");
                 TryAlterTable(conn, "ALTER TABLE Locations ADD COLUMN Level INTEGER DEFAULT 0");
                 TryAlterTable(conn, "ALTER TABLE Locations ADD COLUMN ParentID INTEGER");
@@ -177,16 +178,29 @@ namespace NmapInventory
                     SaveDeviceScanHistory(conn, deviceID, dev.Status, dev.Ports);
                     UpdateDeviceLastSeen(conn, deviceID);
 
-                    // MAC-History nur wenn MAC vorhanden
+                    // MAC-History NUR einfügen wenn MAC neu ist (nicht bei jedem Scan)
                     if (!string.IsNullOrEmpty(dev.MacAddress))
                     {
+                        string lastMac = null;
                         using (var cmd = new SQLiteCommand(
-                            "INSERT INTO DeviceMacHistory (DeviceID, MacAddress, IPAddress) VALUES (@DeviceID, @MAC, @IP)", conn))
+                            "SELECT MacAddress FROM DeviceMacHistory WHERE DeviceID=@ID ORDER BY Timestamp DESC LIMIT 1", conn))
                         {
-                            cmd.Parameters.AddWithValue("@DeviceID", deviceID);
-                            cmd.Parameters.AddWithValue("@MAC", dev.MacAddress);
-                            cmd.Parameters.AddWithValue("@IP", dev.IP);
-                            cmd.ExecuteNonQuery();
+                            cmd.Parameters.AddWithValue("@ID", deviceID);
+                            var result = cmd.ExecuteScalar();
+                            lastMac = result?.ToString();
+                        }
+
+                        // Nur einfügen wenn MAC sich geändert hat oder noch kein Eintrag existiert
+                        if (lastMac != dev.MacAddress)
+                        {
+                            using (var cmd = new SQLiteCommand(
+                                "INSERT INTO DeviceMacHistory (DeviceID, MacAddress, IPAddress) VALUES (@DeviceID, @MAC, @IP)", conn))
+                            {
+                                cmd.Parameters.AddWithValue("@DeviceID", deviceID);
+                                cmd.Parameters.AddWithValue("@MAC", dev.MacAddress);
+                                cmd.Parameters.AddWithValue("@IP", dev.IP);
+                                cmd.ExecuteNonQuery();
+                            }
                         }
                     }
                 }
@@ -218,11 +232,11 @@ namespace NmapInventory
 
             if (existingID > 0)
             {
-                // Hostname und MAC bei jedem Scan aktualisieren (Vendor-Name etc.)
+                // Hostname nur aktualisieren wenn er NICHT manuell gesetzt wurde (CustomHostname = 0)
                 using (var cmd = new SQLiteCommand(
                     @"UPDATE Devices SET 
-                        Hostname   = CASE WHEN @Hostname != '' THEN @Hostname ELSE Hostname END,
-                        MacAddress = CASE WHEN @MAC != ''     THEN @MAC     ELSE MacAddress END,
+                        Hostname   = CASE WHEN CustomHostname = 0 AND @Hostname != '' THEN @Hostname ELSE Hostname END,
+                        MacAddress = CASE WHEN @MAC != '' THEN @MAC ELSE MacAddress END,
                         IP         = @IP
                       WHERE ID = @ID", conn))
                 {
@@ -409,6 +423,47 @@ namespace NmapInventory
                 }
             }
             return ports;
+        }
+
+        /// <summary>
+        /// Speichert einen manuell gesetzten Hostnamen.
+        /// CustomHostname = 1 → wird bei späteren Scans nicht überschrieben.
+        /// Aktualisiert auch LocationIPs.WorkstationName für Konsistenz.
+        /// </summary>
+        public void UpdateDeviceHostname(string ip, string newHostname)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+
+                // Devices-Tabelle aktualisieren + als manuell markieren
+                using (var cmd = new SQLiteCommand(
+                    "UPDATE Devices SET Hostname=@Hostname, CustomHostname=1 WHERE IP=@IP", conn))
+                {
+                    cmd.Parameters.AddWithValue("@Hostname", newHostname);
+                    cmd.Parameters.AddWithValue("@IP", ip);
+                    cmd.ExecuteNonQuery();
+                }
+
+                // Auch WorkstationName in LocationIPs aktualisieren
+                using (var cmd = new SQLiteCommand(
+                    "UPDATE LocationIPs SET WorkstationName=@Name WHERE IPAddress=@IP", conn))
+                {
+                    cmd.Parameters.AddWithValue("@Name", newHostname);
+                    cmd.Parameters.AddWithValue("@IP", ip);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Setzt CustomHostname zurück → Hostname wird beim nächsten Scan wieder automatisch gesetzt.
+        /// </summary>
+        public void ResetCustomHostname(string ip)
+        {
+            ExecuteNonQuery(
+                "UPDATE Devices SET CustomHostname=0 WHERE IP=@IP",
+                new[] { ("@IP", ip) });
         }
 
         private string BuildPortsJson(List<NmapPort> ports)
