@@ -4,9 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
-using System.Xml.Linq;
 using Newtonsoft.Json;
-using JsonFormatting = Newtonsoft.Json.Formatting;
 
 namespace NmapInventory
 {
@@ -34,6 +32,7 @@ namespace NmapInventory
         private List<SoftwareInfo> currentSoftware = new List<SoftwareInfo>();
         private string currentRemotePC = "";
         private int selectedLocationID = -1;
+        private string currentDisplayedIP = "";  // aktuell im Detail-Panel angezeigte IP
 
         public MainForm()
         {
@@ -48,14 +47,11 @@ namespace NmapInventory
             ApplyAutoSizing();
         }
 
-        // === INITIALIZATION ===
         private void ApplyAutoSizing()
         {
             int screenWidth = Screen.PrimaryScreen.WorkingArea.Width;
             int screenHeight = Screen.PrimaryScreen.WorkingArea.Height;
-            int width = Math.Max((int)(screenWidth * 0.9), 1200);
-            int height = Math.Max((int)(screenHeight * 0.9), 800);
-            Size = new Size(width, height);
+            Size = new Size(Math.Max((int)(screenWidth * 0.9), 1200), Math.Max((int)(screenHeight * 0.9), 800));
             StartPosition = FormStartPosition.CenterScreen;
         }
 
@@ -66,71 +62,76 @@ namespace NmapInventory
             StartPosition = FormStartPosition.CenterScreen;
             AutoScaleMode = AutoScaleMode.Font;
 
-            // === PANELS ===
-            Panel topPanel = CreateTopPanel();
+            // Felder explizit befüllen — sonst sind tabControl und statusLabel null!
             tabControl = CreateTabControl();
+            var topPanel = CreateTopPanel();
             statusLabel = CreateStatusLabel();
-
             Controls.AddRange(new Control[] { tabControl, topPanel, statusLabel });
         }
 
+        // =========================================================
         // === TOP PANEL ===
+        // =========================================================
+
         private Panel CreateTopPanel()
         {
             Panel topPanel = new Panel { Dock = DockStyle.Top, Height = 100, BackColor = Color.LightGray };
 
             var networkLabel = new Label { Text = "Netzwerk:", Location = new Point(10, 10), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
-            networkTextBox = new TextBox { Text = "192.168.2.0/24", Location = new Point(100, 8), Width = 200, Height = 28, Font = new Font("Segoe UI", 10) };
+            networkTextBox = new TextBox { Text = "192.168.2.0/24", Location = new Point(100, 8), Width = 200, Font = new Font("Segoe UI", 10) };
 
             var locationLabel = new Label { Text = "Standort:", Location = new Point(10, 45), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
-            locationComboBox = new ComboBox { Location = new Point(100, 43), Width = 200, Height = 28, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
+            locationComboBox = new ComboBox { Location = new Point(100, 43), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
             locationComboBox.SelectedIndexChanged += (s, e) => OnLocationSelected();
 
-            newLocationButton = new Button { Text = "+ Neuer Standort", Location = new Point(310, 43), Width = 140, Height = 28, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 10) };
+            newLocationButton = new Button { Text = "+ Neuer Standort", Location = new Point(310, 43), Width = 140, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             newLocationButton.Click += (s, e) => CreateNewLocation();
 
-            scanButton = new Button { Text = "Scan starten", Location = new Point(460, 8), Width = 120, Height = 28, BackColor = Color.LightBlue, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            scanButton = new Button { Text = "Scan starten", Location = new Point(460, 8), Width = 120, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             scanButton.Click += (s, e) => StartScan();
 
-            hardwareButton = new Button { Text = "Hardware/Software", Location = new Point(590, 8), Width = 160, Height = 28, BackColor = Color.LightYellow, Font = new Font("Segoe UI", 10) };
+            hardwareButton = new Button { Text = "Hardware/Software", Location = new Point(590, 8), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             hardwareButton.Click += (s, e) => StartHardwareQuery();
 
-            exportButton = new Button { Text = "Exportieren", Location = new Point(760, 8), Width = 120, Height = 28, BackColor = Color.LightCyan, Font = new Font("Segoe UI", 10) };
+            exportButton = new Button { Text = "Exportieren", Location = new Point(760, 8), Width = 120, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             exportButton.Click += (s, e) => ExportData();
 
-            remoteHardwareButton = new Button { Text = "Remote Hardware", Location = new Point(890, 8), Width = 160, Height = 28, BackColor = Color.LightSalmon, Font = new Font("Segoe UI", 10) };
+            remoteHardwareButton = new Button { Text = "Remote Hardware", Location = new Point(890, 8), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             remoteHardwareButton.Click += (s, e) => StartRemoteHardwareQuery();
 
             topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, hardwareButton, exportButton, remoteHardwareButton });
             return topPanel;
         }
 
+        // =========================================================
         // === TAB CONTROL ===
+        // =========================================================
+
         private TabControl CreateTabControl()
         {
-            var control = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
-            control.TabPages.Add(CreateDeviceTab());
-            control.TabPages.Add(CreateNmapTab());
-            control.TabPages.Add(CreateHardwareTab());
-            control.TabPages.Add(CreateSoftwareTab());
-            control.TabPages.Add(CreateDBDeviceTab());
-            control.TabPages.Add(CreateDBSoftwareTab());
-            control.TabPages.Add(CreateCustomerLocationTab());
-            return control;
+            tabControl = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
+            tabControl.TabPages.Add(CreateDeviceTab());
+            tabControl.TabPages.Add(CreateNmapTab());
+            tabControl.TabPages.Add(CreateHardwareTab());
+            tabControl.TabPages.Add(CreateSoftwareTab());
+            tabControl.TabPages.Add(CreateDBDeviceTab());
+            tabControl.TabPages.Add(CreateDBSoftwareTab());
+            tabControl.TabPages.Add(CreateCustomerLocationTab());
+            return tabControl;
         }
 
-        // === DEVICE TAB ===
         private TabPage CreateDeviceTab()
         {
             Panel devicePanel = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = Color.WhiteSmoke, Padding = new Padding(10) };
-            var legendLabel = new Label { Text = "Legende:", Location = new Point(10, 10), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
-            var greenCircle = new Label { Text = "●", Location = new Point(90, 10), Font = new Font("Arial", 16), ForeColor = Color.Green, AutoSize = true };
-            var greenText = new Label { Text = "Aktiv (online)", Location = new Point(110, 12), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var yellowCircle = new Label { Text = "●", Location = new Point(230, 10), Font = new Font("Arial", 16), ForeColor = Color.Gold, AutoSize = true };
-            var yellowText = new Label { Text = "Neu seit letztem Scan", Location = new Point(250, 12), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var redCircle = new Label { Text = "●", Location = new Point(430, 10), Font = new Font("Arial", 16), ForeColor = Color.Red, AutoSize = true };
-            var redText = new Label { Text = "Offline (fehlend)", Location = new Point(450, 12), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            devicePanel.Controls.AddRange(new Control[] { legendLabel, greenCircle, greenText, yellowCircle, yellowText, redCircle, redText });
+            devicePanel.Controls.AddRange(new Control[] {
+                new Label { Text = "Legende:", Location = new Point(10, 10), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) },
+                new Label { Text = "●", Location = new Point(90, 10), Font = new Font("Arial", 16), ForeColor = Color.Green, AutoSize = true },
+                new Label { Text = "Aktiv (online)", Location = new Point(110, 12), AutoSize = true, Font = new Font("Segoe UI", 10) },
+                new Label { Text = "●", Location = new Point(230, 10), Font = new Font("Arial", 16), ForeColor = Color.Gold, AutoSize = true },
+                new Label { Text = "Neu seit letztem Scan", Location = new Point(250, 12), AutoSize = true, Font = new Font("Segoe UI", 10) },
+                new Label { Text = "●", Location = new Point(430, 10), Font = new Font("Arial", 16), ForeColor = Color.Red, AutoSize = true },
+                new Label { Text = "Offline (fehlend)", Location = new Point(450, 12), AutoSize = true, Font = new Font("Segoe UI", 10) }
+            });
 
             deviceTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10), RowTemplate = { Height = 35 } };
             deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", Width = 50 });
@@ -144,9 +145,7 @@ namespace NmapInventory
                 {
                     e.PaintBackground(e.ClipBounds, false);
                     string status = e.Value?.ToString() ?? "";
-                    Color circleColor = Color.Green;
-                    if (status == "NEU") circleColor = Color.Gold;
-                    else if (status == "OFFLINE") circleColor = Color.Red;
+                    Color circleColor = status == "NEU" ? Color.Gold : status == "OFFLINE" ? Color.Red : Color.Green;
                     using (var brush = new SolidBrush(circleColor))
                         e.Graphics.FillEllipse(brush, e.CellBounds.Left + 15, e.CellBounds.Top + 10, 20, 20);
                     e.Handled = true;
@@ -159,40 +158,33 @@ namespace NmapInventory
             return new TabPage("Geräte") { Controls = { container } };
         }
 
-        // === NMAP TAB ===
         private TabPage CreateNmapTab()
         {
             rawOutputTextBox = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, Font = new Font("Consolas", 10), ReadOnly = true };
             return new TabPage("Nmap Ausgabe") { Controls = { rawOutputTextBox } };
         }
 
-        // === HARDWARE TAB ===
         private TabPage CreateHardwareTab()
         {
-            Panel hardwareInfoPanel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.LightSteelBlue, Padding = new Padding(10) };
-            var pcLabel = new Label { Name = "hardwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue };
-            var updateLabel = new Label { Name = "hardwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray };
-            hardwareInfoPanel.Controls.AddRange(new Control[] { pcLabel, updateLabel });
-
+            Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.LightSteelBlue, Padding = new Padding(10) };
+            panel.Controls.AddRange(new Control[] {
+                new Label { Name = "hardwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue },
+                new Label { Name = "hardwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray }
+            });
             hardwareInfoTextBox = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, Font = new Font("Consolas", 10), ReadOnly = true };
-
             var container = new Panel { Dock = DockStyle.Fill };
             container.Controls.Add(hardwareInfoTextBox);
-            container.Controls.Add(hardwareInfoPanel);
-
-            var tabPage = new TabPage("Hardware") { Controls = { container } };
-            tabPage.Name = "Hardware";
-            return tabPage;
+            container.Controls.Add(panel);
+            return new TabPage("Hardware") { Name = "Hardware", Controls = { container } };
         }
 
-        // === SOFTWARE TAB ===
         private TabPage CreateSoftwareTab()
         {
-            Panel softwareInfoPanel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.LightSteelBlue, Padding = new Padding(10) };
-            var pcLabel = new Label { Name = "softwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue };
-            var updateLabel = new Label { Name = "softwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray };
-            softwareInfoPanel.Controls.AddRange(new Control[] { pcLabel, updateLabel });
-
+            Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.LightSteelBlue, Padding = new Padding(10) };
+            panel.Controls.AddRange(new Control[] {
+                new Label { Name = "softwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue },
+                new Label { Name = "softwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray }
+            });
             softwareGridView = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10) };
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Software", Width = 250, ReadOnly = true });
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", Width = 120, ReadOnly = true });
@@ -201,63 +193,51 @@ namespace NmapInventory
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Letztes Update", Width = 140, ReadOnly = true });
             softwareGridView.Columns.Add(new DataGridViewButtonColumn { HeaderText = "Aktion", Text = "Update", Width = 80, UseColumnTextForButtonValue = true });
             softwareGridView.CellClick += (s, e) => OnSoftwareUpdateClick(e);
-
             var container = new Panel { Dock = DockStyle.Fill };
             container.Controls.Add(softwareGridView);
-            container.Controls.Add(softwareInfoPanel);
-
-            var tabPage = new TabPage("Software") { Controls = { container } };
-            tabPage.Name = "Software";
-            return tabPage;
+            container.Controls.Add(panel);
+            return new TabPage("Software") { Name = "Software", Controls = { container } };
         }
 
-        // === DB DEVICE TAB ===
         private TabPage CreateDBDeviceTab()
         {
-            Panel dbDevicePanel = new Panel { Dock = DockStyle.Top, Height = 50 };
-            var dbDeviceFilter = new ComboBox { Location = new Point(80, 12), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
-            dbDeviceFilter.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
-            dbDeviceFilter.SelectedIndex = 0;
-            dbDeviceFilter.SelectedIndexChanged += (s, e) => LoadDatabaseDevices(dbDeviceFilter.SelectedItem.ToString());
-
-            var dbDeviceSaveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100, Font = new Font("Segoe UI", 10) };
-            dbDeviceSaveBtn.Click += (s, e) => SaveDatabaseDevices();
-
-            var dbDeviceDeleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, BackColor = Color.IndianRed, Font = new Font("Segoe UI", 10) };
-            dbDeviceDeleteBtn.Click += (s, e) => DeleteDatabaseDeviceRow();
-
-            dbDevicePanel.Controls.AddRange(new Control[] { new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) }, dbDeviceFilter, dbDeviceSaveBtn, dbDeviceDeleteBtn });
+            Panel panel = new Panel { Dock = DockStyle.Top, Height = 50 };
+            var filter = new ComboBox { Location = new Point(80, 12), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
+            filter.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
+            filter.SelectedIndex = 0;
+            filter.SelectedIndexChanged += (s, e) => LoadDatabaseDevices(filter.SelectedItem.ToString());
+            var saveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100, Font = new Font("Segoe UI", 10) };
+            saveBtn.Click += (s, e) => SaveDatabaseDevices();
+            var deleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            deleteBtn.Click += (s, e) => DeleteDatabaseDeviceRow();
+            panel.Controls.AddRange(new Control[] { new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) }, filter, saveBtn, deleteBtn });
 
             dbDeviceTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10) };
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "ID", Width = 50, ReadOnly = true, Visible = false });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Zeitstempel", Width = 150, ReadOnly = true });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP", Width = 120 });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hostname", Width = 150 });
+            dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "MAC", Width = 150 });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", Width = 80 });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Offene Ports", Width = 400 });
-
             var container = new Panel { Dock = DockStyle.Fill };
             container.Controls.Add(dbDeviceTable);
-            container.Controls.Add(dbDevicePanel);
+            container.Controls.Add(panel);
             return new TabPage("DB - Geräte") { Controls = { container } };
         }
 
-        // === DB SOFTWARE TAB ===
         private TabPage CreateDBSoftwareTab()
         {
-            Panel dbSoftwarePanel = new Panel { Dock = DockStyle.Top, Height = 50 };
-            var dbSoftwareFilter = new ComboBox { Location = new Point(80, 12), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
-            dbSoftwareFilter.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
-            dbSoftwareFilter.SelectedIndex = 0;
-            dbSoftwareFilter.SelectedIndexChanged += (s, e) => LoadDatabaseSoftware(dbSoftwareFilter.SelectedItem.ToString());
-
-            var dbSoftwareSaveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100, Font = new Font("Segoe UI", 10) };
-            dbSoftwareSaveBtn.Click += (s, e) => SaveDatabaseSoftware();
-
-            var dbSoftwareDeleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, BackColor = Color.IndianRed, Font = new Font("Segoe UI", 10) };
-            dbSoftwareDeleteBtn.Click += (s, e) => DeleteDatabaseSoftwareRow();
-
-            dbSoftwarePanel.Controls.AddRange(new Control[] { new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) }, dbSoftwareFilter, dbSoftwareSaveBtn, dbSoftwareDeleteBtn });
+            Panel panel = new Panel { Dock = DockStyle.Top, Height = 50 };
+            var filter = new ComboBox { Location = new Point(80, 12), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
+            filter.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
+            filter.SelectedIndex = 0;
+            filter.SelectedIndexChanged += (s, e) => LoadDatabaseSoftware(filter.SelectedItem.ToString());
+            var saveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100, Font = new Font("Segoe UI", 10) };
+            saveBtn.Click += (s, e) => SaveDatabaseSoftware();
+            var deleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            deleteBtn.Click += (s, e) => DeleteDatabaseSoftwareRow();
+            panel.Controls.AddRange(new Control[] { new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) }, filter, saveBtn, deleteBtn });
 
             dbSoftwareTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10) };
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "ID", Width = 50, ReadOnly = true, Visible = false });
@@ -268,95 +248,220 @@ namespace NmapInventory
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", Width = 150 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Installiert am", Width = 120 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Letztes Update", Width = 140 });
-
             var container = new Panel { Dock = DockStyle.Fill };
             container.Controls.Add(dbSoftwareTable);
-            container.Controls.Add(dbSoftwarePanel);
+            container.Controls.Add(panel);
             return new TabPage("DB - Software") { Controls = { container } };
         }
 
-        // === CUSTOMER/LOCATION TAB ===
+        // =========================================================
+        // === KUNDEN / STANDORTE TAB ===
+        // =========================================================
+
         private TabPage CreateCustomerLocationTab()
         {
-            var customerLocationTab = new TabPage("Kunden / Standorte");
-            var splitContainer = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 300 };
+            var tab = new TabPage("Kunden / Standorte");
+            var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 320 };
 
-            Panel leftPanel = new Panel { Dock = DockStyle.Fill };
+            // --- Linke Seite: TreeView + Buttons ---
             var treeView = new TreeView { Name = "customerTreeView", Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
             treeView.AfterSelect += (s, e) => OnTreeNodeSelected(e.Node);
+            treeView.NodeMouseDoubleClick += (s, e) =>
+            {
+                var nd = e.Node?.Tag as NodeData;
+                if (nd?.Type == "IP" && nd.Data is LocationIP lip)
+                    ShowDeviceDetails(lip.IPAddress);
+            };
 
             Panel treeButtonPanel = new Panel { Dock = DockStyle.Top, Height = 40 };
-            var addCustomerBtn = new Button { Text = "+ Kunde", Location = new Point(5, 8), Width = 90, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 10) };
-            addCustomerBtn.Click += (s, e) => AddCustomer();
-            var addLocationBtn = new Button { Text = "+ Standort", Location = new Point(100, 8), Width = 90, BackColor = Color.LightBlue, Font = new Font("Segoe UI", 10) };
-            addLocationBtn.Click += (s, e) => AddLocation();
-            var addDepartmentBtn = new Button { Text = "+ Abteilung", Location = new Point(195, 8), Width = 90, BackColor = Color.LightCyan, Font = new Font("Segoe UI", 10) };
-            addDepartmentBtn.Click += (s, e) => AddDepartment();
-            var deleteNodeBtn = new Button { Text = "Löschen", Location = new Point(290, 8), Width = 90, BackColor = Color.IndianRed, Font = new Font("Segoe UI", 10) };
-            deleteNodeBtn.Click += (s, e) => DeleteNode();
-            treeButtonPanel.Controls.AddRange(new Control[] { addCustomerBtn, addLocationBtn, addDepartmentBtn, deleteNodeBtn });
+            var addCustomerBtn = CreateButton("+ Kunde", 5, Color.LightGreen, AddCustomer);
+            var addLocationBtn = CreateButton("+ Standort", 100, Color.LightBlue, AddLocation);
+            var addDeptBtn = CreateButton("+ Abteilung", 195, Color.LightCyan, AddDepartment);
+            var deleteBtn = CreateButton("Löschen", 290, Color.IndianRed, DeleteNode);
+            treeButtonPanel.Controls.AddRange(new Control[] { addCustomerBtn, addLocationBtn, addDeptBtn, deleteBtn });
 
+            var leftPanel = new Panel { Dock = DockStyle.Fill };
             leftPanel.Controls.Add(treeView);
             leftPanel.Controls.Add(treeButtonPanel);
-            splitContainer.Panel1.Controls.Add(leftPanel);
+            split.Panel1.Controls.Add(leftPanel);
 
-            Panel rightPanel = CreateDetailsPanel();
-            splitContainer.Panel2.Controls.Add(rightPanel);
-            customerLocationTab.Controls.Add(splitContainer);
-            return customerLocationTab;
+            // --- Rechte Seite: Details ---
+            split.Panel2.Controls.Add(CreateDetailsPanel());
+            tab.Controls.Add(split);
+            return tab;
         }
 
-        // === DETAILS PANEL ===
+        private Button CreateButton(string text, int x, Color color, Action onClick)
+        {
+            var btn = new Button { Text = text, Location = new Point(x, 8), Width = 90, Font = new Font("Segoe UI", 10) };
+            btn.Click += (s, e) => onClick();
+            return btn;
+        }
+
         private Panel CreateDetailsPanel()
         {
-            Panel rightPanel = new Panel { Dock = DockStyle.Fill };
+            Panel panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
 
+            // --- Kunde / Standort Details ---
             var detailsLabel = new Label { Name = "detailsLabel", Text = "Details", Location = new Point(10, 10), Font = new Font("Segoe UI", 12, FontStyle.Bold), AutoSize = true };
             var nameLabel = new Label { Text = "Name:", Location = new Point(10, 50), AutoSize = true, Font = new Font("Segoe UI", 10) };
             var nameTextBox = new TextBox { Name = "nameTextBox", Location = new Point(100, 47), Width = 300, Font = new Font("Segoe UI", 10) };
             var addressLabel = new Label { Text = "Adresse:", Location = new Point(10, 80), AutoSize = true, Font = new Font("Segoe UI", 10) };
             var addressTextBox = new TextBox { Name = "addressTextBox", Location = new Point(100, 77), Width = 300, Multiline = true, Height = 60, Font = new Font("Segoe UI", 10) };
-            var saveDetailsBtn = new Button { Text = "Details speichern", Location = new Point(100, 145), Width = 150, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 10) };
-            saveDetailsBtn.Click += (s, e) => SaveNodeDetails();
+            var saveBtn = new Button { Text = "Details speichern", Location = new Point(100, 145), Width = 150, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            saveBtn.Click += (s, e) => SaveNodeDetails();
 
+            // --- IP Tabelle (für Location-Knoten) ---
             var ipLabel = new Label { Text = "Zugeordnete IP-Adressen:", Location = new Point(10, 190), Font = new Font("Segoe UI", 10, FontStyle.Bold), AutoSize = true };
-            var ipDataGridView = new DataGridView { Name = "ipDataGridView", Location = new Point(10, 220), Width = 600, Height = 200, AllowUserToAddRows = false, ReadOnly = true, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = true, Font = new Font("Segoe UI", 10) };
-            ipDataGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Arbeitsplatz", Width = 200 });
-            ipDataGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP-Adresse", Width = 150 });
-            ipDataGridView.CellDoubleClick += (s, e) => EditIPEntry(e.RowIndex);
+            var ipGrid = new DataGridView
+            {
+                Name = "ipDataGridView",
+                Location = new Point(10, 215),
+                Width = 620,
+                Height = 200,
+                AllowUserToAddRows = false,
+                ReadOnly = true,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = true,
+                Font = new Font("Segoe UI", 10),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+            };
+            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Arbeitsplatz", Width = 200 });
+            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP-Adresse", Width = 150 });
+            ipGrid.CellDoubleClick += (s, e) => EditIPEntry(e.RowIndex);
 
-            var ipInputLabel = new Label { Text = "Arbeitsplatz:", Location = new Point(10, 430), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var workstationInputTextBox = new TextBox { Name = "workstationInputTextBox", Location = new Point(100, 427), Width = 200, Font = new Font("Segoe UI", 10) };
-            var ipInputLabel2 = new Label { Text = "IP:", Location = new Point(310, 430), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var ipInputTextBox = new TextBox { Name = "ipInputTextBox", Location = new Point(340, 427), Width = 150, Font = new Font("Segoe UI", 10) };
-            var addIpBtn = new Button { Text = "IP hinzufügen", Location = new Point(500, 425), Width = 110, BackColor = Color.LightBlue, Font = new Font("Segoe UI", 10) };
+            // --- Manuelle IP Eingabe ---
+            var y = 425;
+            var wsLabel = new Label { Text = "Arbeitsplatz:", Location = new Point(10, y + 3), AutoSize = true, Font = new Font("Segoe UI", 10) };
+            var wsBox = new TextBox { Name = "workstationInputTextBox", Location = new Point(110, y), Width = 180, Font = new Font("Segoe UI", 10) };
+            var ipLbl2 = new Label { Text = "IP:", Location = new Point(300, y + 3), AutoSize = true, Font = new Font("Segoe UI", 10) };
+            var ipBox = new TextBox { Name = "ipInputTextBox", Location = new Point(320, y), Width = 140, Font = new Font("Segoe UI", 10) };
+            var addIpBtn = new Button { Text = "Manuell hinzufügen", Location = new Point(470, y - 1), Width = 155, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             addIpBtn.Click += (s, e) => AddIPToNode();
-            var removeIpBtn = new Button { Text = "IP(s) entfernen", Location = new Point(10, 460), Width = 120, BackColor = Color.IndianRed, Font = new Font("Segoe UI", 10) };
-            removeIpBtn.Click += (s, e) => RemoveIPFromNode();
-            var moveIpBtn = new Button { Text = "IP verschieben", Location = new Point(280, 460), Width = 150, BackColor = Color.LightCyan, Font = new Font("Segoe UI", 10) };
-            moveIpBtn.Click += (s, e) => MoveIPToAnotherLocation();
-            var importFromDbBtn = new Button { Text = "Aus DB importieren", Location = new Point(140, 460), Width = 150, BackColor = Color.LightGoldenrodYellow, Font = new Font("Segoe UI", 10) };
-            importFromDbBtn.Click += (s, e) => ImportIPsFromDatabase();
 
-            rightPanel.Controls.AddRange(new Control[] { detailsLabel, nameLabel, nameTextBox, addressLabel, addressTextBox, saveDetailsBtn, ipLabel, ipDataGridView, ipInputLabel, workstationInputTextBox, ipInputLabel2, ipInputTextBox, addIpBtn, removeIpBtn, moveIpBtn, importFromDbBtn });
-            return rightPanel;
+            y += 35;
+            var removeBtn = new Button { Text = "IP(s) entfernen", Location = new Point(10, y), Width = 130, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            removeBtn.Click += (s, e) => RemoveIPFromNode();
+            var moveBtn = new Button { Text = "IP verschieben", Location = new Point(150, y), Width = 130, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            moveBtn.Click += (s, e) => MoveIPToAnotherLocation();
+            var importBtn = new Button { Text = "📥 Aus DB importieren", Location = new Point(290, y), Width = 160, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            importBtn.Click += (s, e) => ImportIPsFromDatabase();
+
+            // =========================================================
+            // === GERÄTE-DETAILS (sichtbar wenn IP-Knoten gewählt) ===
+            // =========================================================
+            var devicePanel = new Panel
+            {
+                Name = "deviceDetailPanel",
+                Location = new Point(0, 500),
+                Width = 650,
+                Height = 500,
+                Visible = false,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+            };
+
+            var deviceTitleLabel = new Label
+            {
+                Name = "deviceTitleLabel",
+                Text = "💻 Geräteinformationen",
+                Location = new Point(10, 5),
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                AutoSize = true
+            };
+
+            var refreshDeviceBtn = new Button
+            {
+                Text = "🔄 Aktualisieren",
+                Location = new Point(480, 2),
+                Width = 150,
+                Height = 26,
+                BackColor = Color.LightSteelBlue,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            refreshDeviceBtn.Click += (s, e) =>
+            {
+                if (!string.IsNullOrEmpty(currentDisplayedIP))
+                    ShowDeviceDetails(currentDisplayedIP);
+            };
+
+            // Gerät Info-Zeile (IP / MAC / Hostname)
+            var deviceInfoLabel = new Label
+            {
+                Name = "deviceInfoLabel",
+                Text = "",
+                Location = new Point(10, 30),
+                Size = new Size(630, 20),
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+
+            // --- Hardware Tab ---
+            var deviceTabs = new TabControl
+            {
+                Name = "deviceTabControl",
+                Location = new Point(10, 55),
+                Width = 630,
+                Height = 430,
+                Font = new Font("Segoe UI", 10)
+            };
+
+            // Hardware-Seite
+            var hwPage = new TabPage("🖥 Hardware");
+            var hwBox = new TextBox
+            {
+                Name = "deviceHardwareBox",
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                Font = new Font("Consolas", 9),
+                BackColor = Color.WhiteSmoke
+            };
+            hwPage.Controls.Add(hwBox);
+
+            // Software-Seite
+            var swPage = new TabPage("📦 Software");
+            var swGrid = new DataGridView
+            {
+                Name = "deviceSoftwareGrid",
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                Font = new Font("Segoe UI", 9),
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+            };
+            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Software", DataPropertyName = "Name", FillWeight = 40 });
+            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", DataPropertyName = "Version", FillWeight = 20 });
+            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", DataPropertyName = "Publisher", FillWeight = 25 });
+            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Installiert", DataPropertyName = "InstallDate", FillWeight = 15 });
+            swPage.Controls.Add(swGrid);
+
+            deviceTabs.TabPages.Add(hwPage);
+            deviceTabs.TabPages.Add(swPage);
+
+            devicePanel.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn, deviceInfoLabel, deviceTabs });
+
+            panel.Controls.AddRange(new Control[] {
+                detailsLabel, nameLabel, nameTextBox, addressLabel, addressTextBox, saveBtn,
+                ipLabel, ipGrid,
+                wsLabel, wsBox, ipLbl2, ipBox, addIpBtn,
+                removeBtn, moveBtn, importBtn,
+                devicePanel
+            });
+            return panel;
         }
 
-        // === STATUS LABEL ===
         private Label CreateStatusLabel()
-        {
-            return new Label { Dock = DockStyle.Bottom, Height = 30, Text = "Bereit", BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(5) };
-        }
+            => new Label { Dock = DockStyle.Bottom, Height = 30, Text = "Bereit", BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(5) };
 
-        // === SCAN OPERATIONS ===
+        // =========================================================
+        // === SCAN ===
+        // =========================================================
+
         private void StartScan()
         {
-            if (selectedLocationID <= 0)
-            {
-                MessageBox.Show("Bitte wähle einen Standort aus oder erstelle einen neuen!", "Warnung", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
+            if (selectedLocationID <= 0) { MessageBox.Show("Bitte wähle einen Standort aus!", "Warnung", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             scanButton.Enabled = false;
             statusLabel.Text = "Scan läuft...";
             System.Threading.Tasks.Task.Run(() =>
@@ -366,76 +471,96 @@ namespace NmapInventory
                     var oldDevices = currentDevices.ToList();
                     lastScanDevices = oldDevices;
                     var result = nmapScanner.Scan(networkTextBox.Text);
-
                     Invoke(new MethodInvoker(() =>
                     {
                         rawOutputTextBox.Text = result.RawOutput;
                         currentDevices = result.Devices;
+                        dbManager.SaveDevices(currentDevices);  // speichert IP, Hostname, MAC und History
                         SyncDevicesToLocation(selectedLocationID, currentDevices);
                         DisplayDevicesWithStatus(currentDevices, oldDevices);
-                        dbManager.SaveDevices(currentDevices);
                         LoadDatabaseDevices();
-                        statusLabel.Text = "Scan abgeschlossen und mit Standort abgeglichen";
+
+                        // Detail-Panel automatisch aktualisieren falls gerade ein Gerät angezeigt wird
+                        if (!string.IsNullOrEmpty(currentDisplayedIP))
+                            ShowDeviceDetails(currentDisplayedIP);
+
+                        statusLabel.Text = "Scan abgeschlossen";
                         scanButton.Enabled = true;
                     }));
                 }
                 catch (Exception ex)
                 {
-                    Invoke(new MethodInvoker(() =>
-                    {
-                        MessageBox.Show($"Fehler: {ex.Message}");
-                        statusLabel.Text = "Fehler beim Scan";
-                        scanButton.Enabled = true;
-                    }));
+                    Invoke(new MethodInvoker(() => { MessageBox.Show($"Fehler: {ex.Message}"); statusLabel.Text = "Fehler beim Scan"; scanButton.Enabled = true; }));
                 }
             });
+        }
+
+        private void SyncDevicesToLocation(int locationID, List<DeviceInfo> devices)
+        {
+            var location = dbManager.GetLocationByID(locationID);
+            if (location == null) { statusLabel.Text = "Fehler: Standort nicht gefunden!"; return; }
+
+            // Bereits zugewiesene IPs und MACs ermitteln
+            var currentIPs = new HashSet<string>(
+                dbManager.GetIPsWithWorkstationByLocation(locationID).Select(ip => ip.IPAddress));
+
+            // Alle MACs die bereits in Devices-Tabelle unter dieser Location stecken
+            var allLocationDevices = dbManager.GetAllIPsFromDevices();
+            var assignedMACs = new HashSet<string>(
+                allLocationDevices
+                    .Join(dbManager.GetIPsWithWorkstationByLocation(locationID),
+                          d => d.IP, l => l.IPAddress, (d, l) => d)
+                    .Select(d => dbManager.LoadDevices("Alle")
+                        .FirstOrDefault(x => x.IP == d.IP)?.MacAddress ?? "")
+                    .Where(m => !string.IsNullOrEmpty(m)));
+
+            int added = 0, skippedIP = 0, skippedMAC = 0;
+
+            foreach (var device in devices)
+            {
+                // Gleiche IP bereits vorhanden → überspringen
+                if (currentIPs.Contains(device.IP))
+                {
+                    skippedIP++;
+                    continue;
+                }
+
+                // Gleiche MAC bereits vorhanden → nur LastSeen aktualisieren, nicht neu anlegen
+                if (!string.IsNullOrEmpty(device.MacAddress) && assignedMACs.Contains(device.MacAddress))
+                {
+                    skippedMAC++;
+                    continue;
+                }
+
+                dbManager.AddIPToLocation(locationID, device.IP, device.Hostname ?? "");
+                added++;
+            }
+
+            var msg = $"{added} neue Geräte zu '{location.Name}' hinzugefügt";
+            if (skippedIP > 0) msg += $", {skippedIP} IP bereits vorhanden";
+            if (skippedMAC > 0) msg += $", {skippedMAC} MAC bereits bekannt (nur LastSeen aktualisiert)";
+            statusLabel.Text = msg;
         }
 
         private void DisplayDevicesWithStatus(List<DeviceInfo> currentDevices, List<DeviceInfo> previousDevices)
         {
             deviceTable.Rows.Clear();
-            var displayedIPs = new HashSet<string>();
-            var oldIPSet = new HashSet<string>(previousDevices.Select(d => d.IP));
-            var newIPSet = new HashSet<string>(currentDevices.Select(d => d.IP));
-
+            var displayed = new HashSet<string>();
+            var locationIPs = dbManager.GetIPsWithWorkstationByLocation(selectedLocationID);
+            var lastScanIPs = new HashSet<string>(dbManager.LoadDevices("Alle").Where(d => locationIPs.Any(l => l.IPAddress == d.IP)).GroupBy(d => d.IP).Select(g => g.First().IP));
+            var currentIPs = new HashSet<string>(currentDevices.Select(d => d.IP));
             foreach (var dev in currentDevices)
-            {
-                if (!displayedIPs.Contains(dev.IP))
-                {
-                    string statusText = oldIPSet.Contains(dev.IP) ? "AKTIV" : "NEU";
-                    deviceTable.Rows.Add(statusText, dev.IP, dev.Hostname, dev.Status, dev.Ports);
-                    displayedIPs.Add(dev.IP);
-                }
-            }
-
-            foreach (var oldDev in previousDevices)
-            {
-                if (!newIPSet.Contains(oldDev.IP) && !displayedIPs.Contains(oldDev.IP))
-                {
-                    deviceTable.Rows.Add("OFFLINE", oldDev.IP, oldDev.Hostname, "Down", "-");
-                    displayedIPs.Add(oldDev.IP);
-                }
-            }
+                if (displayed.Add(dev.IP))
+                    deviceTable.Rows.Add(lastScanIPs.Contains(dev.IP) ? "AKTIV" : "NEU", dev.IP, dev.Hostname, dev.Status, dev.Ports);
+            foreach (var last in dbManager.LoadDevices("Alle").Where(d => locationIPs.Any(l => l.IPAddress == d.IP)).GroupBy(d => d.IP).Select(g => g.First()))
+                if (!currentIPs.Contains(last.IP) && displayed.Add(last.IP))
+                    deviceTable.Rows.Add("OFFLINE", last.IP, last.Hostname ?? "", "Down", "-");
         }
 
-        private void SyncDevicesToLocation(int locationID, List<DeviceInfo> devices)
-        {
-            var location = dbManager.GetLocationsByCustomer(dbManager.GetCustomers().FirstOrDefault().ID).FirstOrDefault(l => l.ID == locationID);
-            if (location == null) return;
+        // =========================================================
+        // === HARDWARE / SOFTWARE ===
+        // =========================================================
 
-            var currentIPs = dbManager.GetIPsWithWorkstationByLocation(locationID);
-            var currentIPSet = new HashSet<string>(currentIPs.Select(ip => ip.IPAddress));
-
-            foreach (var device in devices)
-            {
-                if (!currentIPSet.Contains(device.IP))
-                    dbManager.AddIPToLocation(locationID, device.IP, device.Hostname ?? "");
-            }
-
-            statusLabel.Text = $"Neue Geräte hinzugefügt: {devices.Count - currentIPSet.Count}";
-        }
-
-        // === HARDWARE OPERATIONS ===
         private void StartHardwareQuery()
         {
             hardwareButton.Enabled = false;
@@ -443,15 +568,10 @@ namespace NmapInventory
             System.Threading.Tasks.Task.Run(() =>
             {
                 string hw = hardwareManager.GetHardwareInfo();
-                List<SoftwareInfo> sw = softwareManager.GetInstalledSoftware();
+                var sw = softwareManager.GetInstalledSoftware();
                 string pcName = Environment.MachineName;
-                foreach (var software in sw)
-                {
-                    software.PCName = pcName;
-                    software.Timestamp = DateTime.Now;
-                }
+                foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
                 dbManager.CheckForUpdates(sw, pcName);
-
                 Invoke(new MethodInvoker(() =>
                 {
                     hardwareInfoTextBox.Text = hw;
@@ -478,15 +598,10 @@ namespace NmapInventory
                         try
                         {
                             string hw = hardwareManager.GetRemoteHardwareInfo(form.ComputerIP, form.Username, form.Password);
-                            List<SoftwareInfo> sw = softwareManager.GetRemoteSoftware(form.ComputerIP, form.Username, form.Password);
+                            var sw = softwareManager.GetRemoteSoftware(form.ComputerIP, form.Username, form.Password);
                             string pcName = form.ComputerIP;
-                            foreach (var software in sw)
-                            {
-                                software.PCName = pcName;
-                                software.Timestamp = DateTime.Now;
-                            }
+                            foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
                             dbManager.CheckForUpdates(sw, pcName);
-
                             Invoke(new MethodInvoker(() =>
                             {
                                 hardwareInfoTextBox.Text = hw;
@@ -499,12 +614,7 @@ namespace NmapInventory
                         }
                         catch (Exception ex)
                         {
-                            Invoke(new MethodInvoker(() =>
-                            {
-                                MessageBox.Show($"Fehler: {ex.Message}");
-                                statusLabel.Text = "Fehler bei Remote Abfrage";
-                                remoteHardwareButton.Enabled = true;
-                            }));
+                            Invoke(new MethodInvoker(() => { MessageBox.Show($"Fehler: {ex.Message}"); statusLabel.Text = "Fehler bei Remote Abfrage"; remoteHardwareButton.Enabled = true; }));
                         }
                     });
                 }
@@ -515,258 +625,134 @@ namespace NmapInventory
         {
             currentRemotePC = remotePC;
             softwareGridView.Rows.Clear();
-            var displayedSoftware = new HashSet<string>();
-
+            var displayed = new HashSet<string>();
             var softwareTab = tabControl.TabPages["Software"];
-            if (softwareTab != null)
+            var infoPanel = (softwareTab?.Controls[0] as Panel)?.Controls.OfType<Panel>().FirstOrDefault();
+            if (infoPanel != null)
             {
-                var container = softwareTab.Controls[0] as Panel;
-                var infoPanel = container?.Controls.OfType<Panel>().FirstOrDefault();
-                if (infoPanel != null)
-                {
-                    var pcLabel = infoPanel.Controls["softwarePCLabel"] as Label;
-                    var updateLabel = infoPanel.Controls["softwareUpdateLabel"] as Label;
-                    if (pcLabel != null) pcLabel.Text = string.IsNullOrEmpty(remotePC) ? $"Lokaler PC: {Environment.MachineName}" : $"Remote-PC: {remotePC}";
-                    if (updateLabel != null) updateLabel.Text = $"Letzte Aktualisierung: {DateTime.Now:dd.MM.yyyy HH:mm:ss}";
-                }
+                (infoPanel.Controls["softwarePCLabel"] as Label).Text = string.IsNullOrEmpty(remotePC) ? $"Lokaler PC: {Environment.MachineName}" : $"Remote-PC: {remotePC}";
+                (infoPanel.Controls["softwareUpdateLabel"] as Label).Text = $"Letzte Aktualisierung: {DateTime.Now:dd.MM.yyyy HH:mm:ss}";
             }
-
             foreach (var sw in software.OrderBy(s => s.Name))
             {
-                string uniqueKey = sw.Name + "|" + sw.Version;
-                if (!displayedSoftware.Contains(uniqueKey))
-                {
+                string key = sw.Name + "|" + sw.Version;
+                if (displayed.Add(key))
                     softwareGridView.Rows.Add(sw.Name, sw.Version ?? "N/A", sw.Publisher ?? "", sw.InstallDate ?? "", sw.LastUpdate ?? "-", "Update");
-                    displayedSoftware.Add(uniqueKey);
-                }
             }
         }
 
-        // === DATABASE OPERATIONS ===
+        // =========================================================
+        // === DB LADEN / SPEICHERN ===
+        // =========================================================
+
         private void LoadDatabaseDevices(string filter = "Alle")
         {
             dbDeviceTable.Rows.Clear();
-            var devices = dbManager.LoadDevices(filter);
-            var displayedIPs = new HashSet<string>();
-            foreach (var dev in devices)
-            {
-                if (!displayedIPs.Contains(dev.IP))
-                {
-                    dbDeviceTable.Rows.Add(dev.ID, dev.Zeitstempel, dev.IP, dev.Hostname, dev.Status, dev.Ports);
-                    displayedIPs.Add(dev.IP);
-                }
-            }
+            var displayed = new HashSet<string>();
+            foreach (var dev in dbManager.LoadDevices(filter))
+                if (displayed.Add(dev.IP))
+                    dbDeviceTable.Rows.Add(dev.ID, dev.Zeitstempel, dev.IP, dev.Hostname, dev.MacAddress ?? "", dev.Status, dev.Ports);
         }
 
         private void LoadDatabaseSoftware(string filter = "Alle")
         {
             dbSoftwareTable.Rows.Clear();
-            var software = dbManager.LoadSoftware(filter);
-            var displayedSoftware = new HashSet<string>();
-            foreach (var sw in software)
+            var displayed = new HashSet<string>();
+            foreach (var sw in dbManager.LoadSoftware(filter))
             {
-                string uniqueKey = sw.PCName + "|" + sw.Name + "|" + sw.Version;
-                if (!displayedSoftware.Contains(uniqueKey))
-                {
+                string key = sw.PCName + "|" + sw.Name + "|" + sw.Version;
+                if (displayed.Add(key))
                     dbSoftwareTable.Rows.Add(sw.ID, sw.Zeitstempel, sw.PCName, sw.Name, sw.Version, sw.Publisher, sw.InstallDate, sw.LastUpdate);
-                    displayedSoftware.Add(uniqueKey);
-                }
             }
         }
 
         private void SaveDatabaseDevices()
         {
-            if (!VerifyPassword("Änderungen speichern")) return;
-            try
-            {
-                dbManager.UpdateDevices(GetDevicesFromGrid());
-                MessageBox.Show("Änderungen wurden gespeichert!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                LoadDatabaseDevices();
-            }
-            catch (Exception ex) { MessageBox.Show($"Fehler beim Speichern: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            try { dbManager.UpdateDevices(GetDevicesFromGrid()); MessageBox.Show("Gespeichert!", "Erfolg"); LoadDatabaseDevices(); }
+            catch (Exception ex) { MessageBox.Show($"Fehler: {ex.Message}"); }
         }
 
         private void DeleteDatabaseDeviceRow()
         {
-            if (dbDeviceTable.SelectedRows.Count == 0) { MessageBox.Show("Bitte wähle eine Zeile zum Löschen aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            if (!VerifyPassword("Zeile löschen")) return;
-            try
-            {
-                int id = Convert.ToInt32(dbDeviceTable.SelectedRows[0].Cells[0].Value);
-                dbManager.DeleteDevice(id);
-                MessageBox.Show("Zeile wurde gelöscht!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                LoadDatabaseDevices();
-            }
-            catch (Exception ex) { MessageBox.Show($"Fehler beim Löschen: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            if (dbDeviceTable.SelectedRows.Count == 0) return;
+            try { dbManager.DeleteDevice(Convert.ToInt32(dbDeviceTable.SelectedRows[0].Cells[0].Value)); LoadDatabaseDevices(); }
+            catch (Exception ex) { MessageBox.Show($"Fehler: {ex.Message}"); }
         }
 
         private void SaveDatabaseSoftware()
         {
-            if (!VerifyPassword("Änderungen speichern")) return;
-            try
-            {
-                dbManager.UpdateSoftwareEntries(GetSoftwareFromGrid());
-                MessageBox.Show("Änderungen wurden gespeichert!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                LoadDatabaseSoftware();
-            }
-            catch (Exception ex) { MessageBox.Show($"Fehler beim Speichern: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            try { dbManager.UpdateSoftwareEntries(GetSoftwareFromGrid()); MessageBox.Show("Gespeichert!", "Erfolg"); LoadDatabaseSoftware(); }
+            catch (Exception ex) { MessageBox.Show($"Fehler: {ex.Message}"); }
         }
 
         private void DeleteDatabaseSoftwareRow()
         {
-            if (dbSoftwareTable.SelectedRows.Count == 0) { MessageBox.Show("Bitte wähle eine Zeile zum Löschen aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            if (!VerifyPassword("Zeile löschen")) return;
-            try
-            {
-                int id = Convert.ToInt32(dbSoftwareTable.SelectedRows[0].Cells[0].Value);
-                dbManager.DeleteSoftwareEntry(id);
-                MessageBox.Show("Zeile wurde gelöscht!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                LoadDatabaseSoftware();
-            }
-            catch (Exception ex) { MessageBox.Show($"Fehler beim Löschen: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            if (dbSoftwareTable.SelectedRows.Count == 0) return;
+            try { dbManager.DeleteSoftwareEntry(Convert.ToInt32(dbSoftwareTable.SelectedRows[0].Cells[0].Value)); LoadDatabaseSoftware(); }
+            catch (Exception ex) { MessageBox.Show($"Fehler: {ex.Message}"); }
         }
 
-        // === EXPORT ===
         private void ExportData()
         {
             using (var sfd = new SaveFileDialog { Filter = "JSON (*.json)|*.json|XML (*.xml)|*.xml" })
-            {
                 if (sfd.ShowDialog() == DialogResult.OK)
-                {
-                    try
-                    {
-                        var exporter = new DataExporter();
-                        exporter.Export(sfd.FileName, currentDevices, currentSoftware, hardwareInfoTextBox.Text);
-                        MessageBox.Show("Daten exportiert!", "Erfolg");
-                    }
+                    try { new DataExporter().Export(sfd.FileName, currentDevices, currentSoftware, hardwareInfoTextBox.Text); MessageBox.Show("Exportiert!", "Erfolg"); }
                     catch (Exception ex) { MessageBox.Show($"Fehler: {ex.Message}"); }
-                }
-            }
         }
 
-        // === HELPER METHODS ===
-        private bool VerifyPassword(string action)
-        {
-            using (var passwordForm = new PasswordVerificationForm(action))
-                return passwordForm.ShowDialog(this) == DialogResult.OK;
-        }
+        // =========================================================
+        // === CUSTOMER / LOCATION TREE ===
+        // =========================================================
 
-        private List<DatabaseDevice> GetDevicesFromGrid()
-        {
-            var devices = new List<DatabaseDevice>();
-            foreach (DataGridViewRow row in dbDeviceTable.Rows)
-                if (row.Cells[0].Value != null)
-                    devices.Add(new DatabaseDevice { ID = Convert.ToInt32(row.Cells[0].Value), Zeitstempel = row.Cells[1].Value?.ToString(), IP = row.Cells[2].Value?.ToString(), Hostname = row.Cells[3].Value?.ToString(), Status = row.Cells[4].Value?.ToString(), Ports = row.Cells[5].Value?.ToString() });
-            return devices;
-        }
-
-        private List<DatabaseSoftware> GetSoftwareFromGrid()
-        {
-            var software = new List<DatabaseSoftware>();
-            foreach (DataGridViewRow row in dbSoftwareTable.Rows)
-                if (row.Cells[0].Value != null)
-                    software.Add(new DatabaseSoftware { ID = Convert.ToInt32(row.Cells[0].Value), Zeitstempel = row.Cells[1].Value?.ToString(), PCName = row.Cells[2].Value?.ToString(), Name = row.Cells[3].Value?.ToString(), Version = row.Cells[4].Value?.ToString(), Publisher = row.Cells[5].Value?.ToString(), InstallDate = row.Cells[6].Value?.ToString(), LastUpdate = row.Cells[7].Value?.ToString() });
-            return software;
-        }
-
-        private void UpdateHardwareLabels(string pcName, bool isRemote)
-        {
-            var hardwareTab = tabControl.TabPages["Hardware"];
-            var container = hardwareTab?.Controls[0] as Panel;
-            var infoPanel = container?.Controls.OfType<Panel>().FirstOrDefault();
-            if (infoPanel != null)
-            {
-                var pcLabel = infoPanel.Controls["hardwarePCLabel"] as Label;
-                var updateLabel = infoPanel.Controls["hardwareUpdateLabel"] as Label;
-                if (pcLabel != null) pcLabel.Text = isRemote ? $"Remote-PC: {pcName}" : $"Lokaler PC: {pcName}";
-                if (updateLabel != null) updateLabel.Text = $"Letzte Aktualisierung: {DateTime.Now:dd.MM.yyyy HH:mm:ss}";
-            }
-        }
-
-        private void OnSoftwareUpdateClick(DataGridViewCellEventArgs e)
-        {
-            if (e.RowIndex >= 0 && e.ColumnIndex == softwareGridView.Columns.Count - 1)
-            {
-                string softwareName = softwareGridView.Rows[e.RowIndex].Cells[0].Value?.ToString();
-                if (!string.IsNullOrEmpty(softwareName))
-                    softwareManager.UpdateSoftware(softwareName, currentRemotePC, statusLabel);
-            }
-        }
-
-        // === LOCATION COMBO ===
-        private void LoadLocationCombo()
-        {
-            locationComboBox.Items.Clear();
-            locationComboBox.Items.Add(new { ID = -1, Display = "-- Alle Standorte --" });
-            var customers = dbManager.GetCustomers();
-            foreach (var customer in customers)
-            {
-                var locations = dbManager.GetLocationsByCustomer(customer.ID);
-                foreach (var location in locations)
-                    locationComboBox.Items.Add(new { ID = location.ID, Display = $"{customer.Name} > {location.Name}" });
-            }
-            if (locationComboBox.Items.Count > 0) locationComboBox.SelectedIndex = 0;
-        }
-
-        private void OnLocationSelected()
-        {
-            if (locationComboBox.SelectedItem == null) return;
-            dynamic selected = locationComboBox.SelectedItem;
-            selectedLocationID = selected.ID;
-        }
-
-        private void CreateNewLocation()
-        {
-            var customers = dbManager.GetCustomers();
-            if (customers.Count == 0) { MessageBox.Show("Bitte erstelle zuerst einen Kunden!", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            using (var form = new CustomerSelectionForm(customers))
-            {
-                if (form.ShowDialog(this) == DialogResult.OK)
-                {
-                    using (var inputForm = new InputDialog("Neuer Standort", "Standortname:", "Adresse:"))
-                    {
-                        if (inputForm.ShowDialog(this) == DialogResult.OK)
-                        {
-                            dbManager.AddLocation(form.SelectedCustomerID, inputForm.Value1, inputForm.Value2);
-                            LoadLocationCombo();
-                            statusLabel.Text = "Standort erstellt";
-                        }
-                    }
-                }
-            }
-        }
-
-        // === CUSTOMER/LOCATION TREE ===
         private void LoadCustomerTree()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
             if (treeView == null) return;
             treeView.Nodes.Clear();
-            var customers = dbManager.GetCustomers();
-            foreach (var customer in customers)
+            foreach (var customer in dbManager.GetCustomers())
             {
-                var customerNode = new TreeNode(customer.Name) { Tag = new NodeData { Type = "Customer", ID = customer.ID, Data = customer } };
+                var customerNode = new TreeNode($"👤 {customer.Name}")
+                {
+                    Tag = new NodeData { Type = "Customer", ID = customer.ID, Data = customer }
+                };
                 var locations = dbManager.GetLocationsByCustomer(customer.ID);
-                foreach (var location in locations)
-                    AddLocationNodeRecursive(customerNode, location);
+                for (int i = 0; i < locations.Count; i++)
+                    AddLocationNodeRecursive(customerNode, locations[i], $"S{i + 1}");
                 treeView.Nodes.Add(customerNode);
             }
             treeView.ExpandAll();
             LoadLocationCombo();
         }
 
-        private void AddLocationNodeRecursive(TreeNode parentNode, Location location)
+        private void AddLocationNodeRecursive(TreeNode parentNode, Location location, string shortID)
         {
-            var locationNode = new TreeNode(location.Name) { Tag = new NodeData { Type = "Location", ID = location.ID, Data = location } };
-            var children = dbManager.GetChildLocations(location.ID);
-            foreach (var child in children)
-                AddLocationNodeRecursive(locationNode, child);
-            var ips = dbManager.GetIPsWithWorkstationByLocation(location.ID);
-            foreach (var ip in ips)
+            string icon = location.Level == 0 ? "🏢" : "📂";
+            var locationNode = new TreeNode($"[{shortID}] {icon} {location.Name}")
             {
-                string displayText = string.IsNullOrEmpty(ip.WorkstationName) ? $"📍 {ip.IPAddress}" : $"💻 {ip.WorkstationName} ({ip.IPAddress})";
-                var ipNode = new TreeNode(displayText) { Tag = new NodeData { Type = "IP", Data = ip } };
-                locationNode.Nodes.Add(ipNode);
+                Tag = new NodeData { Type = "Location", ID = location.ID, Data = location }
+            };
+
+            var children = dbManager.GetChildLocations(location.ID);
+            for (int i = 0; i < children.Count; i++)
+            {
+                // Standort:       S1, S2, S3
+                // Abteilung:      S1.A1, S1.A2
+                // Unterabteilung: S1.A1.1, S1.A1.2
+                string childID = location.Level == 0
+                    ? $"{shortID}.A{i + 1}"
+                    : $"{shortID}.{i + 1}";
+                AddLocationNodeRecursive(locationNode, children[i], childID);
+            }
+
+            foreach (var ip in dbManager.GetIPsWithWorkstationByLocation(location.ID))
+            {
+                string display = string.IsNullOrEmpty(ip.WorkstationName)
+                    ? $"📍 {ip.IPAddress}"
+                    : $"💻 {ip.WorkstationName} ({ip.IPAddress})";
+                locationNode.Nodes.Add(new TreeNode(display)
+                {
+                    Tag = new NodeData { Type = "IP", ID = ip.ID, Data = ip }
+                });
             }
             parentNode.Nodes.Add(locationNode);
         }
@@ -774,200 +760,372 @@ namespace NmapInventory
         private void OnTreeNodeSelected(TreeNode node)
         {
             if (node?.Tag == null) return;
-            var nodeData = (NodeData)node.Tag;
-            var nameTextBox = FindControl<TextBox>("nameTextBox");
-            var addressTextBox = FindControl<TextBox>("addressTextBox");
-            var ipDataGridView = FindControl<DataGridView>("ipDataGridView");
+            var nodeData = node.Tag as NodeData;
+            if (nodeData == null) return;
+
+            var nameBox = FindControl<TextBox>("nameTextBox");
+            var addressBox = FindControl<TextBox>("addressTextBox");
+            var ipGrid = FindControl<DataGridView>("ipDataGridView");
             var detailsLabel = FindControl<Label>("detailsLabel");
-            if (nameTextBox == null || addressTextBox == null || ipDataGridView == null || detailsLabel == null) return;
-            ipDataGridView.Rows.Clear();
+            if (nameBox == null || addressBox == null || ipGrid == null || detailsLabel == null) return;
+
+            ipGrid.Rows.Clear();
+            HideDeviceDetails();
 
             if (nodeData.Type == "Customer")
             {
-                var customer = (Customer)nodeData.Data;
+                // Data aus DB neu laden statt aus dem Tag-Cache lesen
+                var customers = dbManager.GetCustomers();
+                var c = customers.FirstOrDefault(x => x.ID == nodeData.ID);
+                if (c == null) return;
                 detailsLabel.Text = "Kunde bearbeiten";
-                nameTextBox.Text = customer.Name;
-                addressTextBox.Text = customer.Address;
-                nameTextBox.Enabled = addressTextBox.Enabled = true;
+                nameBox.Text = c.Name;
+                addressBox.Text = c.Address ?? "";
+                nameBox.Enabled = addressBox.Enabled = true;
             }
             else if (nodeData.Type == "Location")
             {
-                var location = (Location)nodeData.Data;
-                string levelName = location.Level == 0 ? "Standort" : "Abteilung";
-                detailsLabel.Text = $"{levelName} bearbeiten (Level {location.Level})";
-                nameTextBox.Text = location.Name;
-                addressTextBox.Text = location.Address;
-                nameTextBox.Enabled = addressTextBox.Enabled = true;
-                var ips = dbManager.GetIPsWithWorkstationByLocation(location.ID);
-                foreach (var ip in ips)
-                    ipDataGridView.Rows.Add(ip.WorkstationName ?? "", ip.IPAddress);
+                // Data aus DB neu laden — verhindert veraltete Daten nach Tree-Rebuild
+                var loc = dbManager.GetLocationByID(nodeData.ID);
+                if (loc == null) return;
+                detailsLabel.Text = $"{(loc.Level == 0 ? "Standort" : "Abteilung")} bearbeiten (Level {loc.Level})";
+                nameBox.Text = loc.Name;
+                addressBox.Text = loc.Address ?? "";
+                nameBox.Enabled = addressBox.Enabled = true;
+                foreach (var ip in dbManager.GetIPsWithWorkstationByLocation(loc.ID))
+                    ipGrid.Rows.Add(ip.WorkstationName ?? "", ip.IPAddress);
             }
             else if (nodeData.Type == "IP")
             {
-                var ip = (LocationIP)nodeData.Data;
-                detailsLabel.Text = "IP-Adresse";
-                nameTextBox.Text = ip.WorkstationName ?? "";
-                addressTextBox.Text = ip.IPAddress;
-                nameTextBox.Enabled = addressTextBox.Enabled = false;
+                if (nodeData.Data is LocationIP ip)
+                {
+                    detailsLabel.Text = "IP-Adresse";
+                    nameBox.Text = ip.WorkstationName ?? "";
+                    addressBox.Text = ip.IPAddress ?? "";
+                    nameBox.Enabled = addressBox.Enabled = false;
+
+                    // Geräte-Panel befüllen und einblenden
+                    ShowDeviceDetails(ip.IPAddress);
+                }
             }
         }
+
+        /// <summary>
+        /// Lädt Hardware- und Software-Infos für eine IP aus der DB
+        /// und zeigt sie im deviceDetailPanel an.
+        /// </summary>
+        private void ShowDeviceDetails(string ipAddress)
+        {
+            currentDisplayedIP = ipAddress;  // merken für Refresh-Button
+
+            var devicePanel = FindControl<Panel>("deviceDetailPanel");
+            var titleLabel = FindControl<Label>("deviceTitleLabel");
+            var infoLabel = FindControl<Label>("deviceInfoLabel");
+            var hwBox = FindControl<TextBox>("deviceHardwareBox");
+            var swGrid = FindControl<DataGridView>("deviceSoftwareGrid");
+            if (devicePanel == null || hwBox == null || swGrid == null) return;
+
+            // Gerät aus DB suchen
+            var allDevices = dbManager.LoadDevices("Alle");
+            var device = allDevices.FirstOrDefault(d => d.IP == ipAddress);
+
+            if (device == null)
+            {
+                devicePanel.Visible = false;
+                return;
+            }
+
+            // Info-Zeile
+            infoLabel.Text = $"IP: {device.IP}   |   MAC: {device.MacAddress ?? "unbekannt"}   |   Hostname: {device.Hostname ?? "-"}   |   Zuletzt gesehen: {device.Zeitstempel}";
+
+            // --- Hardware ---
+            // Hardware wird als freier Text in DeviceScanHistory gespeichert — hier holen wir
+            // den letzten Scan-Status + Ports als Zusammenfassung
+            var hwText = new System.Text.StringBuilder();
+            hwText.AppendLine($"=== Hardware-Informationen ===");
+            hwText.AppendLine($"IP-Adresse : {device.IP}");
+            hwText.AppendLine($"MAC-Adresse: {device.MacAddress ?? "nicht ermittelt"}");
+            hwText.AppendLine($"Hostname   : {device.Hostname ?? "-"}");
+            hwText.AppendLine($"Status     : {device.Status ?? "-"}");
+            hwText.AppendLine($"Letzte Scan-Zeit: {device.Zeitstempel}");
+            if (!string.IsNullOrEmpty(device.Ports) && device.Ports != "-")
+            {
+                hwText.AppendLine();
+                hwText.AppendLine("=== Offene Ports ===");
+                foreach (var port in device.Ports.Split(','))
+                    hwText.AppendLine($"  {port.Trim()}");
+            }
+
+            // MAC-History anhängen
+            var macHistory = dbManager.GetDeviceMacHistory(device.ID);
+            if (macHistory.Count > 0)
+            {
+                hwText.AppendLine();
+                hwText.AppendLine("=== MAC-History ===");
+                foreach (var entry in macHistory)
+                    hwText.AppendLine($"  {entry.Item3:dd.MM.yyyy HH:mm}   {entry.Item1,-20}  {entry.Item2}");
+            }
+
+            hwBox.Text = hwText.ToString();
+
+            // --- Software ---
+            swGrid.Rows.Clear();
+            var software = dbManager.LoadSoftware("Alle")
+                .Where(s => s.PCName == device.Hostname || s.PCName == device.IP)
+                .OrderBy(s => s.Name)
+                .ToList();
+
+            if (software.Count > 0)
+            {
+                foreach (var sw in software)
+                    swGrid.Rows.Add(sw.Name, sw.Version ?? "", sw.Publisher ?? "", sw.InstallDate ?? "");
+                titleLabel.Text = $"💻 Geräteinformationen  ({software.Count} Software-Einträge)";
+            }
+            else
+            {
+                swGrid.Rows.Add("Keine Software-Einträge vorhanden", "", "", "");
+                titleLabel.Text = "💻 Geräteinformationen";
+            }
+
+            devicePanel.Visible = true;
+        }
+
+        private void HideDeviceDetails()
+        {
+            var devicePanel = FindControl<Panel>("deviceDetailPanel");
+            if (devicePanel != null) devicePanel.Visible = false;
+        }
+
+        // =========================================================
+        // === TREE AKTIONEN ===
+        // =========================================================
 
         private void AddCustomer()
         {
             using (var form = new InputDialog("Neuer Kunde", "Kundenname:", "Adresse:"))
                 if (form.ShowDialog(this) == DialogResult.OK)
-                {
-                    if (!VerifyPassword("Kunde hinzufügen")) return;
-                    dbManager.AddCustomer(form.Value1, form.Value2);
-                    LoadCustomerTree();
-                    statusLabel.Text = "Kunde hinzugefügt";
-                }
+                { dbManager.AddCustomer(form.Value1, form.Value2); LoadCustomerTree(); statusLabel.Text = "Kunde hinzugefügt"; }
         }
 
         private void AddLocation()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            if (treeView?.SelectedNode == null) return;
-            var nodeData = treeView.SelectedNode.Tag as NodeData;
-            if (nodeData == null || nodeData.Type != "Customer") { MessageBox.Show("Bitte wähle einen Kunden aus, um einen Standort zu erstellen!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            using (var form = new InputDialog("Neuer Top-Level Standort", "Standortname:", "Adresse:"))
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            if (nodeData?.Type != "Customer") { MessageBox.Show("Bitte wähle einen Kunden aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            using (var form = new InputDialog("Neuer Standort", "Standortname:", "Adresse:"))
                 if (form.ShowDialog(this) == DialogResult.OK)
-                {
-                    if (!VerifyPassword("Standort hinzufügen")) return;
-                    dbManager.AddLocation(nodeData.ID, form.Value1, form.Value2);
-                    LoadCustomerTree();
-                    statusLabel.Text = "Standort hinzugefügt";
-                }
+                { dbManager.AddLocation(nodeData.ID, form.Value1, form.Value2); LoadCustomerTree(); statusLabel.Text = "Standort hinzugefügt"; }
         }
 
         private void AddDepartment()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            if (treeView?.SelectedNode == null) return;
-            var nodeData = treeView.SelectedNode.Tag as NodeData;
-            if (nodeData == null || nodeData.Type != "Location") { MessageBox.Show("Bitte wähle einen Standort oder eine Abteilung aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            using (var form = new InputDialog("Neue Abteilung/Ebene", "Abteilungsname:", "Adresse:"))
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            if (nodeData?.Type != "Location") { MessageBox.Show("Bitte wähle einen Standort oder eine Abteilung aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            using (var form = new InputDialog("Neue Abteilung", "Abteilungsname:", "Adresse:"))
                 if (form.ShowDialog(this) == DialogResult.OK)
-                {
-                    if (!VerifyPassword("Abteilung hinzufügen")) return;
-                    dbManager.AddChildLocation(nodeData.ID, form.Value1, form.Value2);
-                    LoadCustomerTree();
-                    statusLabel.Text = "Abteilung hinzugefügt";
-                }
+                { dbManager.AddChildLocation(nodeData.ID, form.Value1, form.Value2); LoadCustomerTree(); statusLabel.Text = "Abteilung hinzugefügt"; }
         }
 
         private void DeleteNode()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            if (treeView?.SelectedNode == null) { MessageBox.Show("Bitte wähle einen Knoten zum Löschen aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            var nodeData = treeView.SelectedNode.Tag as NodeData;
-            if (nodeData == null) return;
-            if (!VerifyPassword($"{nodeData.Type} löschen")) return;
-            if (nodeData.Type == "Customer") { dbManager.DeleteCustomer(nodeData.ID); statusLabel.Text = "Kunde gelöscht"; }
-            else if (nodeData.Type == "Location") { dbManager.DeleteLocation(nodeData.ID); statusLabel.Text = "Standort gelöscht"; }
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            if (nodeData == null) { MessageBox.Show("Bitte wähle einen Knoten aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+
+            string confirmMsg = "";
+            if (nodeData.Type == "Customer") confirmMsg = "Kunden und alle zugehörigen Standorte/Geräte wirklich löschen?";
+            else if (nodeData.Type == "Location") confirmMsg = "Diesen Standort/diese Abteilung und alle Untereinträge wirklich löschen?";
+            else if (nodeData.Type == "IP") confirmMsg = "Dieses Gerät aus der Abteilung entfernen?";
+
+            if (MessageBox.Show(confirmMsg, "Löschen bestätigen",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+            if (nodeData.Type == "Customer")
+            {
+                dbManager.DeleteCustomer(nodeData.ID);
+                statusLabel.Text = "Kunde gelöscht";
+            }
+            else if (nodeData.Type == "Location")
+            {
+                dbManager.DeleteLocation(nodeData.ID);
+                statusLabel.Text = "Standort/Abteilung gelöscht";
+            }
+            else if (nodeData.Type == "IP")
+            {
+                // IP aus der übergeordneten Location entfernen
+                var parentNodeData = treeView.SelectedNode?.Parent?.Tag as NodeData;
+                if (parentNodeData?.Type == "Location" && nodeData.Data is LocationIP ip)
+                {
+                    dbManager.RemoveIPFromLocation(parentNodeData.ID, ip.IPAddress);
+                    statusLabel.Text = $"Gerät {ip.IPAddress} entfernt";
+                }
+                else
+                {
+                    MessageBox.Show("Fehler: Übergeordneter Knoten ist keine Location!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+
+            HideDeviceDetails();
+            currentDisplayedIP = "";
             LoadCustomerTree();
         }
 
         private void SaveNodeDetails()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            if (treeView?.SelectedNode == null) return;
-            var nodeData = treeView.SelectedNode.Tag as NodeData;
-            if (nodeData == null) return;
-            var nameTextBox = FindControl<TextBox>("nameTextBox");
-            var addressTextBox = FindControl<TextBox>("addressTextBox");
-            if (nameTextBox == null || addressTextBox == null) return;
-            if (!VerifyPassword("Details speichern")) return;
-            if (nodeData.Type == "Customer") { dbManager.UpdateCustomer(nodeData.ID, nameTextBox.Text, addressTextBox.Text); statusLabel.Text = "Kunde aktualisiert"; }
-            else if (nodeData.Type == "Location") { dbManager.UpdateLocation(nodeData.ID, nameTextBox.Text, addressTextBox.Text); statusLabel.Text = "Standort aktualisiert"; }
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            var nameBox = FindControl<TextBox>("nameTextBox");
+            var addressBox = FindControl<TextBox>("addressTextBox");
+            if (nodeData == null || nameBox == null || addressBox == null) return;
+
+            if (nodeData.Type == "Customer")
+            {
+                dbManager.UpdateCustomer(nodeData.ID, nameBox.Text, addressBox.Text);
+                statusLabel.Text = "Kunde aktualisiert";
+            }
+            else if (nodeData.Type == "Location")
+            {
+                dbManager.UpdateLocation(nodeData.ID, nameBox.Text, addressBox.Text);
+                statusLabel.Text = "Standort aktualisiert";
+            }
             LoadCustomerTree();
+            SelectTreeNodeById(treeView, nodeData.ID);
         }
+
+        // =========================================================
+        // === IP VERWALTUNG ===
+        // =========================================================
 
         private void AddIPToNode()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            var ipInputTextBox = FindControl<TextBox>("ipInputTextBox");
-            var workstationInputTextBox = FindControl<TextBox>("workstationInputTextBox");
-            if (treeView?.SelectedNode == null || ipInputTextBox == null || workstationInputTextBox == null) return;
-            var nodeData = treeView.SelectedNode.Tag as NodeData;
-            if (nodeData == null || nodeData.Type != "Location") { MessageBox.Show("Bitte wähle zuerst einen Standort aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            string ip = ipInputTextBox.Text.Trim();
-            string workstation = workstationInputTextBox.Text.Trim();
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            if (nodeData?.Type != "Location") { MessageBox.Show("Bitte wähle einen Standort oder eine Abteilung aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+
+            string ip = FindControl<TextBox>("ipInputTextBox")?.Text.Trim() ?? "";
+            string ws = FindControl<TextBox>("workstationInputTextBox")?.Text.Trim() ?? "";
             if (string.IsNullOrEmpty(ip)) { MessageBox.Show("Bitte gib eine IP-Adresse ein!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-            if (!VerifyPassword("IP-Adresse hinzufügen")) return;
-            dbManager.AddIPToLocation(nodeData.ID, ip, workstation);
-            ipInputTextBox.Clear();
-            workstationInputTextBox.Clear();
+
+            int locationId = nodeData.ID;
+            dbManager.AddIPToLocation(locationId, ip, ws);
+            FindControl<TextBox>("ipInputTextBox").Clear();
+            FindControl<TextBox>("workstationInputTextBox").Clear();
             LoadCustomerTree();
-            OnTreeNodeSelected(treeView.SelectedNode);
-            statusLabel.Text = "IP-Adresse hinzugefügt";
+            SelectTreeNodeById(treeView, locationId);
+            statusLabel.Text = "IP manuell hinzugefügt";
         }
 
         private void RemoveIPFromNode()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            var ipDataGridView = FindControl<DataGridView>("ipDataGridView");
-            if (ipDataGridView?.SelectedRows.Count == 0) { MessageBox.Show("Bitte wähle mindestens eine IP-Adresse aus der Liste!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             var nodeData = treeView?.SelectedNode?.Tag as NodeData;
-            if (nodeData == null || nodeData.Type != "Location") return;
-            if (!VerifyPassword($"{ipDataGridView.SelectedRows.Count} IP-Adresse(n) entfernen")) return;
-            foreach (DataGridViewRow row in ipDataGridView.SelectedRows)
+            var ipGrid = FindControl<DataGridView>("ipDataGridView");
+            if (nodeData?.Type != "Location" || ipGrid?.SelectedRows.Count == 0) return;
+
+            int locationId = nodeData.ID;
+            int removedCount = 0;
+
+            foreach (DataGridViewRow row in ipGrid.SelectedRows)
             {
                 string ip = row.Cells[1].Value?.ToString();
-                if (!string.IsNullOrEmpty(ip)) dbManager.RemoveIPFromLocation(nodeData.ID, ip);
+                if (!string.IsNullOrEmpty(ip))
+                {
+                    dbManager.RemoveIPFromLocation(locationId, ip);
+                    removedCount++;
+                }
             }
+
             LoadCustomerTree();
-            OnTreeNodeSelected(treeView.SelectedNode);
-            statusLabel.Text = $"{ipDataGridView.SelectedRows.Count} IP-Adresse(n) entfernt";
+            SelectTreeNodeById(treeView, locationId);
+            statusLabel.Text = $"{removedCount} IP(s) entfernt";
         }
+
         private void MoveIPToAnotherLocation()
         {
-            var ipDataGridView = FindControl<DataGridView>("ipDataGridView");
-
-            if (ipDataGridView?.SelectedRows.Count == 0)
-            {
-                MessageBox.Show("Bitte wähle eine IP-Adresse zum Verschieben aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
             var treeView = FindControl<TreeView>("customerTreeView");
             var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+            var ipGrid = FindControl<DataGridView>("ipDataGridView");
 
-            if (nodeData == null || nodeData.Type != "Location")
+            if (nodeData == null)
             {
-                MessageBox.Show("Bitte wähle einen Standort oder eine Abteilung aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Bitte wähle einen Standort oder eine IP im Baum aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
-            int sourceLocationID = nodeData.ID;
-            string ipToMove = ipDataGridView.SelectedRows[0].Cells[1].Value?.ToString();
-            string workstationName = ipDataGridView.SelectedRows[0].Cells[0].Value?.ToString();
+            string ipToMove = null;
+            string workstation = null;
+            int sourceLocationID = -1;
 
-            if (string.IsNullOrEmpty(ipToMove))
+            if (nodeData.Type == "IP")
             {
-                MessageBox.Show("Fehler beim Lesen der IP-Adresse!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // IP-Knoten direkt im Baum angeklickt:
+                // Elternknoten liefert die LocationID, IP steht im Tag.ID (LocationIP.ID)
+                // Wir lesen die echten Daten frisch aus der DB
+                var parentNodeData = treeView.SelectedNode?.Parent?.Tag as NodeData;
+                if (parentNodeData?.Type != "Location")
+                {
+                    MessageBox.Show("Fehler: Übergeordneter Knoten ist keine Location!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                sourceLocationID = parentNodeData.ID;
+
+                // IP frisch aus DB laden anhand der ID im Tag
+                var ipsInParent = dbManager.GetIPsWithWorkstationByLocation(sourceLocationID);
+                var ipEntry = ipsInParent.FirstOrDefault(x => x.ID == nodeData.ID);
+
+                if (ipEntry == null)
+                {
+                    MessageBox.Show("IP-Eintrag konnte nicht gefunden werden!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                ipToMove = ipEntry.IPAddress;
+                workstation = ipEntry.WorkstationName ?? "";
+            }
+            else if (nodeData.Type == "Location")
+            {
+                // Location-Knoten gewählt — IP muss aus der Tabelle rechts ausgewählt sein
+                if (ipGrid == null || ipGrid.SelectedRows.Count == 0)
+                {
+                    MessageBox.Show("Bitte wähle eine IP-Adresse aus der Tabelle aus\noder klicke direkt auf eine IP im Baum!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                ipToMove = ipGrid.SelectedRows[0].Cells[1].Value?.ToString();
+                workstation = ipGrid.SelectedRows[0].Cells[0].Value?.ToString() ?? "";
+                sourceLocationID = nodeData.ID;
+
+                if (string.IsNullOrEmpty(ipToMove))
+                {
+                    MessageBox.Show("Fehler beim Lesen der IP-Adresse!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+            else
+            {
+                MessageBox.Show("Bitte wähle einen Standort oder eine IP im Baum aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
+            // Ziel-Location auswählen
             using (var form = new LocationSelectionDialog(dbManager, sourceLocationID))
             {
                 if (form.ShowDialog(this) == DialogResult.OK)
                 {
-                    int targetLocationID = form.SelectedLocationID;
-
-                    if (!VerifyPassword($"IP {ipToMove} verschieben"))
-                        return;
-
                     try
                     {
                         dbManager.RemoveIPFromLocation(sourceLocationID, ipToMove);
-                        dbManager.AddIPToLocation(targetLocationID, ipToMove, workstationName);
+                        dbManager.AddIPToLocation(form.SelectedLocationID, ipToMove, workstation);
+
+                        var target = dbManager.GetLocationByID(form.SelectedLocationID);
                         LoadCustomerTree();
+                        SelectTreeNodeById(treeView, form.SelectedLocationID);
 
-                        var targetLocation = dbManager.GetLocationByID(targetLocationID);
-                        statusLabel.Text = $"IP {ipToMove} nach '{targetLocation.Name}' verschoben";
-
-                        MessageBox.Show($"IP-Adresse {ipToMove} erfolgreich nach '{targetLocation.Name}' verschoben!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        statusLabel.Text = $"IP {ipToMove} nach '{target?.Name}' verschoben";
+                        MessageBox.Show($"IP {ipToMove} erfolgreich nach '{target?.Name}' verschoben!", "Erfolg", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
                     catch (Exception ex)
                     {
@@ -976,23 +1134,21 @@ namespace NmapInventory
                 }
             }
         }
+
         private void EditIPEntry(int rowIndex)
         {
             if (rowIndex < 0) return;
             var treeView = FindControl<TreeView>("customerTreeView");
-            var ipDataGridView = FindControl<DataGridView>("ipDataGridView");
-            if (ipDataGridView == null) return;
             var nodeData = treeView?.SelectedNode?.Tag as NodeData;
-            if (nodeData == null || nodeData.Type != "Location") return;
-            string currentWorkstation = ipDataGridView.Rows[rowIndex].Cells[0].Value?.ToString();
-            string currentIP = ipDataGridView.Rows[rowIndex].Cells[1].Value?.ToString();
+            var ipGrid = FindControl<DataGridView>("ipDataGridView");
+            if (nodeData?.Type != "Location" || ipGrid == null) return;
+            string currentWS = ipGrid.Rows[rowIndex].Cells[0].Value?.ToString();
+            string currentIP = ipGrid.Rows[rowIndex].Cells[1].Value?.ToString();
             using (var form = new InputDialog("IP-Eintrag bearbeiten", "Arbeitsplatz:", "IP-Adresse:"))
             {
-                form.Value1 = currentWorkstation;
-                form.Value2 = currentIP;
+                form.Value1 = currentWS; form.Value2 = currentIP;
                 if (form.ShowDialog(this) == DialogResult.OK)
                 {
-                    if (!VerifyPassword("IP-Eintrag bearbeiten")) return;
                     dbManager.RemoveIPFromLocation(nodeData.ID, currentIP);
                     dbManager.AddIPToLocation(nodeData.ID, form.Value2, form.Value1);
                     LoadCustomerTree();
@@ -1002,66 +1158,193 @@ namespace NmapInventory
             }
         }
 
+        // =========================================================
+        // === IP IMPORT AUS DATENBANK ===
+        // =========================================================
+
+        /// <summary>
+        /// Öffnet den IP-Import-Dialog, der alle gescannten Geräte aus der DB anzeigt.
+        /// Der Benutzer kann IPs auswählen und direkt der gewählten Abteilung zuweisen.
+        /// </summary>
         private void ImportIPsFromDatabase()
         {
             var treeView = FindControl<TreeView>("customerTreeView");
-            if (treeView?.SelectedNode == null) return;
-            var nodeData = treeView.SelectedNode.Tag as NodeData;
-            if (nodeData == null || nodeData.Type != "Location") { MessageBox.Show("Bitte wähle zuerst einen Standort aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            using (var form = new IPImportDialog(dbManager))
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+
+            if (nodeData?.Type != "Location")
             {
-                if (form.ShowDialog(this) == DialogResult.OK)
+                MessageBox.Show("Bitte wähle zuerst einen Standort oder eine Abteilung im Baum aus!\n\nDie importierten IPs werden dieser Abteilung zugewiesen.", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Frisch aus DB laden — nicht dem möglicherweise veralteten Tag.Data vertrauen
+            var location = dbManager.GetLocationByID(nodeData.ID);
+            if (location == null)
+            {
+                MessageBox.Show("Standort nicht gefunden!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            using (var dialog = new IPImportDialog(dbManager, location.ID, location.Name))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SelectedIPs.Count == 0)
+                    return;
+
+                int imported = 0;
+                var alreadyAssigned = new HashSet<string>(
+                    dbManager.GetIPsWithWorkstationByLocation(location.ID).Select(ip => ip.IPAddress));
+
+                foreach (var entry in dialog.SelectedIPs)
                 {
-                    if (form.SelectedIPs.Count == 0) { MessageBox.Show("Keine IPs ausgewählt!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-                    if (!VerifyPassword($"{form.SelectedIPs.Count} IP(s) importieren")) return;
-                    foreach (var ipEntry in form.SelectedIPs)
-                        dbManager.AddIPToLocation(nodeData.ID, ipEntry.Item1, ipEntry.Item2);
-                    LoadCustomerTree();
-                    OnTreeNodeSelected(treeView.SelectedNode);
-                    statusLabel.Text = $"{form.SelectedIPs.Count} IP(s) importiert";
+                    // entry ist Tuple<string,string>: Item1 = IP, Item2 = Hostname
+                    if (!alreadyAssigned.Contains(entry.Item1))
+                    {
+                        dbManager.AddIPToLocation(location.ID, entry.Item1, entry.Item2);
+                        imported++;
+                    }
+                }
+
+                int skipped = dialog.SelectedIPs.Count - imported;
+                LoadCustomerTree();
+
+                // Nach Tree-Rebuild den Node neu suchen und selektieren
+                SelectTreeNodeById(treeView, nodeData.ID);
+
+                statusLabel.Text = $"✅ {imported} IP(s) nach '{location.Name}' importiert"
+                                 + (skipped > 0 ? $" ({skipped} bereits vorhanden)" : "");
+
+                MessageBox.Show($"{imported} IP-Adresse(n) erfolgreich nach '{location.Name}' importiert!",
+                    "Import erfolgreich", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        /// <summary>
+        /// Sucht nach dem Tree-Rebuild einen Location-Knoten anhand der ID und selektiert ihn.
+        /// </summary>
+        private void SelectTreeNodeById(TreeView treeView, int locationId)
+        {
+            foreach (TreeNode root in treeView.Nodes)
+            {
+                var found = FindNodeById(root, locationId);
+                if (found != null)
+                {
+                    treeView.SelectedNode = found;
+                    found.EnsureVisible();
+                    OnTreeNodeSelected(found);
+                    return;
                 }
             }
+        }
+
+        private TreeNode FindNodeById(TreeNode parent, int locationId)
+        {
+            var nodeData = parent.Tag as NodeData;
+            if (nodeData?.Type == "Location" && nodeData.ID == locationId)
+                return parent;
+
+            foreach (TreeNode child in parent.Nodes)
+            {
+                var found = FindNodeById(child, locationId);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        // =========================================================
+        // === LOCATION COMBO ===
+        // =========================================================
+
+        private void LoadLocationCombo()
+        {
+            locationComboBox.Items.Clear();
+            locationComboBox.Items.Add(new ComboItem { ID = -1, Display = "-- Alle Standorte --" });
+            foreach (var customer in dbManager.GetCustomers())
+                foreach (var location in dbManager.GetLocationsByCustomer(customer.ID))
+                    AddLocationComboRecursive(customer.Name, location);
+            if (locationComboBox.Items.Count > 0) locationComboBox.SelectedIndex = 0;
+        }
+
+        private void AddLocationComboRecursive(string customerName, Location location, string prefix = "")
+        {
+            locationComboBox.Items.Add(new ComboItem { ID = location.ID, Display = $"{customerName} > {prefix}{location.Name}" });
+            foreach (var child in dbManager.GetChildLocations(location.ID))
+                AddLocationComboRecursive(customerName, child, prefix + location.Name + " > ");
+        }
+
+        private void OnLocationSelected()
+        {
+            if (locationComboBox.SelectedItem is ComboItem item)
+                selectedLocationID = item.ID;
+        }
+
+        private void CreateNewLocation()
+        {
+            var customers = dbManager.GetCustomers();
+            if (customers.Count == 0) { MessageBox.Show("Bitte erstelle zuerst einen Kunden!", "Info"); return; }
+            using (var form = new CustomerSelectionForm(customers))
+                if (form.ShowDialog(this) == DialogResult.OK)
+                    using (var input = new InputDialog("Neuer Standort", "Standortname:", "Adresse:"))
+                        if (input.ShowDialog(this) == DialogResult.OK)
+                        { dbManager.AddLocation(form.SelectedCustomerID, input.Value1, input.Value2); LoadCustomerTree(); statusLabel.Text = "Standort erstellt"; }
+        }
+
+        // =========================================================
+        // === HILFSMETHODEN ===
+        // =========================================================
+
+        private void UpdateHardwareLabels(string pcName, bool isRemote)
+        {
+            var tab = tabControl.TabPages["Hardware"];
+            var infoPanel = (tab?.Controls[0] as Panel)?.Controls.OfType<Panel>().FirstOrDefault();
+            if (infoPanel == null) return;
+            (infoPanel.Controls["hardwarePCLabel"] as Label).Text = isRemote ? $"Remote-PC: {pcName}" : $"Lokaler PC: {pcName}";
+            (infoPanel.Controls["hardwareUpdateLabel"] as Label).Text = $"Letzte Aktualisierung: {DateTime.Now:dd.MM.yyyy HH:mm:ss}";
+        }
+
+        private void OnSoftwareUpdateClick(DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex == softwareGridView.Columns.Count - 1)
+            {
+                string name = softwareGridView.Rows[e.RowIndex].Cells[0].Value?.ToString();
+                if (!string.IsNullOrEmpty(name)) softwareManager.UpdateSoftware(name, currentRemotePC, statusLabel);
+            }
+        }
+
+        private List<DatabaseDevice> GetDevicesFromGrid()
+        {
+            var list = new List<DatabaseDevice>();
+            foreach (DataGridViewRow row in dbDeviceTable.Rows)
+                if (row.Cells[0].Value != null)
+                    list.Add(new DatabaseDevice { ID = Convert.ToInt32(row.Cells[0].Value), Zeitstempel = row.Cells[1].Value?.ToString(), IP = row.Cells[2].Value?.ToString(), Hostname = row.Cells[3].Value?.ToString(), MacAddress = row.Cells[4].Value?.ToString(), Status = row.Cells[5].Value?.ToString(), Ports = row.Cells[6].Value?.ToString() });
+            return list;
+        }
+
+        private List<DatabaseSoftware> GetSoftwareFromGrid()
+        {
+            var list = new List<DatabaseSoftware>();
+            foreach (DataGridViewRow row in dbSoftwareTable.Rows)
+                if (row.Cells[0].Value != null)
+                    list.Add(new DatabaseSoftware { ID = Convert.ToInt32(row.Cells[0].Value), Zeitstempel = row.Cells[1].Value?.ToString(), PCName = row.Cells[2].Value?.ToString(), Name = row.Cells[3].Value?.ToString(), Version = row.Cells[4].Value?.ToString(), Publisher = row.Cells[5].Value?.ToString(), InstallDate = row.Cells[6].Value?.ToString(), LastUpdate = row.Cells[7].Value?.ToString() });
+            return list;
         }
 
         private T FindControl<T>(string name) where T : Control
             => Controls.Find(name, true).FirstOrDefault() as T;
     }
 
-    public class CustomerSelectionForm : Form
+    // =========================================================
+    // === HILFSKLASSE: ComboBox-Item mit ID ===
+    // =========================================================
+    public class ComboItem
     {
-        public int SelectedCustomerID { get; private set; }
-
-        public CustomerSelectionForm(List<Customer> customers)
-        {
-            Text = "Kunde auswählen";
-            Width = 400;
-            Height = 200;
-            StartPosition = FormStartPosition.CenterParent;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-
-            var label = new Label { Text = "Wähle einen Kunden aus:", Location = new Point(20, 20), AutoSize = true, Font = new Font("Segoe UI", 11) };
-            var combo = new ComboBox { Location = new Point(20, 50), Width = 350, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
-            foreach (var customer in customers)
-                combo.Items.Add(new { ID = customer.ID, Name = customer.Name });
-            if (combo.Items.Count > 0) combo.SelectedIndex = 0;
-
-            var okBtn = new Button { Text = "OK", Location = new Point(150, 120), Width = 100, DialogResult = DialogResult.OK, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 10) };
-            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 120), Width = 100, DialogResult = DialogResult.Cancel, Font = new Font("Segoe UI", 10) };
-
-            okBtn.Click += (s, e) =>
-            {
-                if (combo.SelectedItem != null)
-                {
-                    dynamic selected = combo.SelectedItem;
-                    SelectedCustomerID = selected.ID;
-                }
-            };
-
-            Controls.AddRange(new Control[] { label, combo, okBtn, cancelBtn });
-            AcceptButton = okBtn;
-            CancelButton = cancelBtn;
-        }
+        public int ID { get; set; }
+        public string Display { get; set; }
+        public override string ToString() => Display;
     }
+
+    // =========================================================
+    // === LOCATION SELECTION DIALOG ===
+    // =========================================================
     public class LocationSelectionDialog : Form
     {
         public int SelectedLocationID { get; private set; }
@@ -1073,113 +1356,78 @@ namespace NmapInventory
         {
             this.dbManager = dbManager;
             this.sourceLocationID = sourceLocationID;
-
             Text = "Ziel-Location auswählen";
-            Width = 400;
-            Height = 500;
+            Width = 400; Height = 500;
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             Font = new Font("Segoe UI", 10);
 
-            var label = new Label
-            {
-                Text = "Wähle die Ziel-Abteilung/Standort aus:",
-                Location = new Point(10, 10),
-                AutoSize = true,
-                Font = new Font("Segoe UI", 11, FontStyle.Bold)
-            };
-
-            locationTree = new TreeView
-            {
-                Location = new Point(10, 40),
-                Width = 360,
-                Height = 380,
-                Font = new Font("Segoe UI", 10)
-            };
-
+            var label = new Label { Text = "Ziel-Abteilung auswählen:", Location = new Point(10, 10), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold) };
+            locationTree = new TreeView { Location = new Point(10, 40), Width = 360, Height = 380, Font = new Font("Segoe UI", 10) };
             PopulateLocationTree();
 
-            var okBtn = new Button
-            {
-                Text = "Verschieben",
-                Location = new Point(140, 430),
-                Width = 110,
-                DialogResult = DialogResult.OK,
-                BackColor = Color.LightGreen,
-                Font = new Font("Segoe UI", 10)
-            };
-
-            var cancelBtn = new Button
-            {
-                Text = "Abbrechen",
-                Location = new Point(260, 430),
-                Width = 110,
-                DialogResult = DialogResult.Cancel,
-                Font = new Font("Segoe UI", 10)
-            };
-
+            var okBtn = new Button { Text = "Verschieben", Location = new Point(140, 430), Width = 110, DialogResult = DialogResult.OK, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 430), Width = 110, DialogResult = DialogResult.Cancel, Font = new Font("Segoe UI", 10) };
             okBtn.Click += (s, e) =>
             {
-                if (locationTree.SelectedNode?.Tag is NodeData nodeData && nodeData.Type == "Location")
-                {
-                    SelectedLocationID = nodeData.ID;
-                }
-                else
-                {
-                    MessageBox.Show("Bitte wähle einen Standort oder eine Abteilung aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    DialogResult = DialogResult.None;
-                }
+                var nodeData = locationTree.SelectedNode?.Tag as NodeData;
+                if (nodeData?.Type == "Location") SelectedLocationID = nodeData.ID;
+                else { MessageBox.Show("Bitte wähle eine Abteilung aus!", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); DialogResult = DialogResult.None; }
             };
-
             Controls.AddRange(new Control[] { label, locationTree, okBtn, cancelBtn });
-            AcceptButton = okBtn;
-            CancelButton = cancelBtn;
+            AcceptButton = okBtn; CancelButton = cancelBtn;
         }
 
         private void PopulateLocationTree()
         {
             locationTree.Nodes.Clear();
-            var customers = dbManager.GetCustomers();
-
-            foreach (var customer in customers)
+            foreach (var customer in dbManager.GetCustomers())
             {
-                var customerNode = new TreeNode(customer.Name)
-                {
-                    Tag = new NodeData { Type = "Customer", ID = customer.ID }
-                };
-
+                var customerNode = new TreeNode($"👤 {customer.Name}") { Tag = new NodeData { Type = "Customer", ID = customer.ID } };
                 var locations = dbManager.GetLocationsByCustomer(customer.ID);
-                foreach (var location in locations)
-                {
-                    AddLocationNodeRecursive(customerNode, location);
-                }
-
+                for (int i = 0; i < locations.Count; i++)
+                    AddLocationNode(customerNode, locations[i], $"S{i + 1}");
                 locationTree.Nodes.Add(customerNode);
             }
-
             locationTree.ExpandAll();
         }
 
-        private void AddLocationNodeRecursive(TreeNode parentNode, Location location)
+        private void AddLocationNode(TreeNode parent, Location location, string shortID)
         {
-            if (location.ID == sourceLocationID)
-                return;
+            var children = dbManager.GetChildLocations(location.ID);
 
-            var locationNode = new TreeNode(location.Name)
+            // Quell-Knoten selbst ausblenden — Kinder aber trotzdem an parent hängen
+            if (location.ID == sourceLocationID)
+            {
+                for (int i = 0; i < children.Count; i++)
+                {
+                    string cid = location.Level == 0 ? $"{shortID}.A{i + 1}" : $"{shortID}.{i + 1}";
+                    AddLocationNode(parent, children[i], cid);
+                }
+                return;
+            }
+
+            string icon = location.Level == 0 ? "🏢" : "📂";
+            var node = new TreeNode($"[{shortID}] {icon} {location.Name}")
             {
                 Tag = new NodeData { Type = "Location", ID = location.ID }
             };
 
-            var children = dbManager.GetChildLocations(location.ID);
-            foreach (var child in children)
+            for (int i = 0; i < children.Count; i++)
             {
-                AddLocationNodeRecursive(locationNode, child);
+                // location.Level kommt direkt aus GetChildLocations — ist korrekt befüllt
+                string cid = location.Level == 0 ? $"{shortID}.A{i + 1}" : $"{shortID}.{i + 1}";
+                AddLocationNode(node, children[i], cid);
             }
 
-            parentNode.Nodes.Add(locationNode);
+            parent.Nodes.Add(node);
         }
     }
-    class Program
+
+    // =========================================================
+    // === MAIN ENTRY ===
+    // =========================================================
+    static class Program
     {
         [STAThread]
         static void Main()
