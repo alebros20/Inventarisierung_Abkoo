@@ -76,7 +76,8 @@ namespace NmapInventory
                     -- Level 0 = Standort (Root)
                     -- Level 1 = Abteilung
                     -- Level 2+ = Unterabteilung(en) (beliebig tief)
-                    -- ParentID = NULL bedeutet: Diese Location ist ein Root-Standort
+                   -- ParentID = NULL bedeutet: Diese Location ist ein Root-Standort
+-- Teil 1
                     CREATE TABLE IF NOT EXISTS Locations (
                         ID INTEGER PRIMARY KEY AUTOINCREMENT,
                         CustomerID INTEGER NOT NULL,
@@ -112,6 +113,15 @@ namespace NmapInventory
                         PortsJson   TEXT,
                         RawOutput   TEXT,
                         ScanTime    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(DeviceID) REFERENCES Devices(ID) ON DELETE CASCADE
+                    );
+
+                    -- Hardware-Info Text pro Gerät (von WMI-Abfrage)
+                    CREATE TABLE IF NOT EXISTS DeviceHardwareInfo (
+                        ID          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID    INTEGER NOT NULL,
+                        HardwareText TEXT,
+                        QueryTime   DATETIME DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY(DeviceID) REFERENCES Devices(ID) ON DELETE CASCADE
                     );
 
@@ -197,7 +207,7 @@ namespace NmapInventory
                                 "INSERT INTO DeviceMacHistory (DeviceID, MacAddress, IPAddress) VALUES (@DeviceID, @MAC, @IP)", conn))
                             {
                                 cmd.Parameters.AddWithValue("@DeviceID", deviceID);
-                                cmd.Parameters.AddWithValue("@MAC", dev.MacAddress);
+                                cmd.Parameters.AddWithValue("@MAC", MacParam(dev.MacAddress));
                                 cmd.Parameters.AddWithValue("@IP", dev.IP);
                                 cmd.ExecuteNonQuery();
                             }
@@ -220,11 +230,11 @@ namespace NmapInventory
             }
 
             // Per MAC suchen falls IP nicht gefunden und MAC vorhanden
-            if (existingID < 0 && !string.IsNullOrEmpty(macAddress))
+            if (existingID < 0 && !string.IsNullOrWhiteSpace(macAddress))
             {
                 using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE MacAddress = @MAC", conn))
                 {
-                    cmd.Parameters.AddWithValue("@MAC", macAddress);
+                    cmd.Parameters.AddWithValue("@MAC", MacParam(macAddress));
                     var result = cmd.ExecuteScalar();
                     if (result != null) existingID = Convert.ToInt32(result);
                 }
@@ -236,14 +246,14 @@ namespace NmapInventory
                 using (var cmd = new SQLiteCommand(
                     @"UPDATE Devices SET 
                         Hostname   = CASE WHEN CustomHostname = 0 AND @Hostname != '' THEN @Hostname ELSE Hostname END,
-                        MacAddress = CASE WHEN @MAC != '' THEN @MAC ELSE MacAddress END,
+                        MacAddress = CASE WHEN @MAC IS NOT NULL AND @MAC != '' THEN @MAC ELSE MacAddress END,
                         IP         = @IP
                       WHERE ID = @ID", conn))
                 {
                     cmd.Parameters.AddWithValue("@ID", existingID);
                     cmd.Parameters.AddWithValue("@IP", ip);
                     cmd.Parameters.AddWithValue("@Hostname", hostname ?? "");
-                    cmd.Parameters.AddWithValue("@MAC", macAddress ?? "");
+                    cmd.Parameters.AddWithValue("@MAC", MacParam(macAddress));
                     cmd.ExecuteNonQuery();
                 }
                 return existingID;
@@ -255,7 +265,7 @@ namespace NmapInventory
             {
                 cmd.Parameters.AddWithValue("@IP", ip);
                 cmd.Parameters.AddWithValue("@Hostname", hostname ?? "");
-                cmd.Parameters.AddWithValue("@MAC", macAddress ?? "");
+                cmd.Parameters.AddWithValue("@MAC", MacParam(macAddress));
                 cmd.ExecuteNonQuery();
             }
 
@@ -426,6 +436,47 @@ namespace NmapInventory
         }
 
         /// <summary>
+        /// Speichert den Hardware-Info-Text (von WMI-Abfrage) für ein Gerät per IP.
+        /// </summary>
+        public void SaveHardwareInfo(string ip, string hardwareText)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                int deviceID = GetOrCreateDevice(conn, ip, null);
+                using (var cmd = new SQLiteCommand(
+                    "INSERT INTO DeviceHardwareInfo (DeviceID, HardwareText) VALUES (@DeviceID, @Text)", conn))
+                {
+                    cmd.Parameters.AddWithValue("@DeviceID", deviceID);
+                    cmd.Parameters.AddWithValue("@Text", hardwareText ?? "");
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Lädt den zuletzt gespeicherten Hardware-Info-Text für ein Gerät.
+        /// </summary>
+        public string GetLatestHardwareInfo(string ip)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand(@"
+                    SELECT h.HardwareText
+                    FROM DeviceHardwareInfo h
+                    JOIN Devices d ON h.DeviceID = d.ID
+                    WHERE d.IP = @IP
+                    ORDER BY h.QueryTime DESC LIMIT 1", conn))
+                {
+                    cmd.Parameters.AddWithValue("@IP", ip);
+                    var result = cmd.ExecuteScalar();
+                    return result?.ToString();
+                }
+            }
+        }
+
+        /// <summary>
         /// Speichert einen manuell gesetzten Hostnamen.
         /// CustomHostname = 1 → wird bei späteren Scans nicht überschrieben.
         /// Aktualisiert auch LocationIPs.WorkstationName für Konsistenz.
@@ -486,6 +537,13 @@ namespace NmapInventory
         // === MAC-ADRESSEN ===
         // =========================================================
 
+        // Hilfsmethode: Macro-Parameter für MAC-Werte. Gibt DBNull.Value zurück für leere/whitespace Strings.
+        private object MacParam(string mac)
+        {
+            if (string.IsNullOrWhiteSpace(mac)) return DBNull.Value;
+            return mac.Trim().ToUpperInvariant();
+        }
+
         public void SaveDeviceMacAddress(string ip, string macAddress, string hostname)
         {
             using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
@@ -495,7 +553,7 @@ namespace NmapInventory
 
                 using (var cmd = new SQLiteCommand("UPDATE Devices SET MacAddress=@MAC WHERE ID=@ID", conn))
                 {
-                    cmd.Parameters.AddWithValue("@MAC", macAddress);
+                    cmd.Parameters.AddWithValue("@MAC", MacParam(macAddress));
                     cmd.Parameters.AddWithValue("@ID", deviceID);
                     cmd.ExecuteNonQuery();
                 }
@@ -503,7 +561,7 @@ namespace NmapInventory
                 using (var cmd = new SQLiteCommand("INSERT INTO DeviceMacHistory (DeviceID, MacAddress, IPAddress) VALUES (@DeviceID, @MAC, @IP)", conn))
                 {
                     cmd.Parameters.AddWithValue("@DeviceID", deviceID);
-                    cmd.Parameters.AddWithValue("@MAC", macAddress);
+                    cmd.Parameters.AddWithValue("@MAC", MacParam(macAddress));
                     cmd.Parameters.AddWithValue("@IP", ip);
                     cmd.ExecuteNonQuery();
                 }
@@ -517,7 +575,7 @@ namespace NmapInventory
                 conn.Open();
                 using (var cmd = new SQLiteCommand("SELECT ID, IP, Hostname FROM Devices WHERE MacAddress=@MAC", conn))
                 {
-                    cmd.Parameters.AddWithValue("@MAC", macAddress);
+                    cmd.Parameters.AddWithValue("@MAC", MacParam(macAddress));
                     using (var reader = cmd.ExecuteReader())
                         if (reader.Read())
                             return (Convert.ToInt32(reader["ID"]), reader["IP"].ToString(), reader["Hostname"]?.ToString());
@@ -587,7 +645,7 @@ namespace NmapInventory
                     {
                         cmd.Parameters.AddWithValue("@ID", dev.ID);
                         cmd.Parameters.AddWithValue("@Hostname", dev.Hostname ?? "");
-                        cmd.Parameters.AddWithValue("@MAC", dev.MacAddress ?? "");
+                        cmd.Parameters.AddWithValue("@MAC", MacParam(dev.MacAddress));
                         cmd.ExecuteNonQuery();
                     }
             }
@@ -838,6 +896,7 @@ namespace NmapInventory
         /// Laedt den vollstaendigen Baum eines Kunden in einem einzigen rekursiven SQL-Query.
         /// Rueckgabe: flache Liste, nach Level und Name sortiert.
         /// </summary>
+        /// Teil 3
         public List<Location> GetFullLocationTree(int customerId)
         {
             var locations = new List<Location>();
@@ -845,6 +904,7 @@ namespace NmapInventory
             {
                 conn.Open();
                 // Rekursives CTE: laedt den gesamten Baum in einem Query
+                // Teil 2
                 string query = @"
                     WITH RECURSIVE loc_tree AS (
                         -- Startknoten: alle Root-Standorte des Kunden

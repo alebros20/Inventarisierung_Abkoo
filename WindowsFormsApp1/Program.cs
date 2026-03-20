@@ -509,11 +509,37 @@ namespace NmapInventory
             deviceTabs.TabPages.Add(hwPage);
             deviceTabs.TabPages.Add(swPage);
 
+            // --- Hardware/Software für dieses Gerät abfragen ---
+            var scanHwSwBtn = new Button
+            {
+                Name = "scanHwSwBtn",
+                Text = "🖥 Hardware/Software abfragen",
+                Location = new Point(10, 505),
+                Width = 220,
+                Height = 26,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            scanHwSwBtn.Click += (s, e) => StartHwSwScanForDevice();
+
+            var scanHwSwStatus = new Label
+            {
+                Name = "scanHwSwStatus",
+                Text = "",
+                Location = new Point(240, 509),
+                Size = new Size(380, 18),
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+
             devicePanel.Controls.AddRange(new Control[] {
                 deviceTitleLabel, refreshDeviceBtn,
                 hostnameLabel, hostnameBox, saveHostnameBtn, resetHostnameBtn,
-                deviceInfoLabel, deviceTabs
+                deviceInfoLabel, deviceTabs,
+                scanHwSwBtn, scanHwSwStatus
             });
+
+            // Panel-Höhe anpassen
+            devicePanel.Height = 540;
 
             panel.Controls.AddRange(new Control[] {
                 detailsLabel, nameLabel, nameTextBox, addressLabel, addressTextBox, saveBtn,
@@ -793,6 +819,128 @@ namespace NmapInventory
             }
         }
 
+        /// <summary>
+        /// Hardware/Software für das aktuell im Detail-Panel angezeigte Gerät abfragen.
+        /// Lokal wenn IP = eigene IP, sonst Remote mit Anmeldedialog.
+        /// Ergebnis wird in DB dem Gerät zugeordnet und im Detail-Panel angezeigt.
+        /// </summary>
+        private void StartHwSwScanForDevice()
+        {
+            if (string.IsNullOrEmpty(currentDisplayedIP))
+            {
+                MessageBox.Show("Bitte zuerst ein Gerät im Baum auswählen!",
+                    "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string ip = currentDisplayedIP;
+
+            // Prüfen ob es der lokale PC ist
+            bool isLocal = IsLocalIP(ip);
+
+            var scanBtn = FindControl<Button>("scanHwSwBtn");
+            var scanStatus = FindControl<Label>("scanHwSwStatus");
+            if (scanBtn != null) scanBtn.Enabled = false;
+            if (scanStatus != null) scanStatus.Text = "Abfrage läuft...";
+
+            if (isLocal)
+            {
+                // Lokaler Scan — kein Login nötig
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    string hw = hardwareManager.GetHardwareInfo();
+                    var sw = softwareManager.GetInstalledSoftware();
+                    string pcName = ip; // per IP speichern für eindeutige Zuordnung
+                    foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
+                    dbManager.CheckForUpdates(sw, pcName);
+                    dbManager.SaveSoftware(sw);
+
+                    // Auch Hostname in Devices aktualisieren
+                    var device = dbManager.LoadDevices("Alle").FirstOrDefault(d => d.IP == ip);
+                    if (device != null)
+                    {
+                        var hwInfo = $"=== Lokal abgefragt: {DateTime.Now:dd.MM.yyyy HH:mm} ===\n{hw}";
+                        dbManager.SaveHardwareInfo(ip, hwInfo);
+                    }
+
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        hardwareInfoTextBox.Text = hw;
+                        currentSoftware = sw;
+                        DisplaySoftwareGrid(sw, ip);
+                        UpdateHardwareLabels(Environment.MachineName, false);
+                        ShowDeviceDetails(ip);
+                        if (scanBtn != null) scanBtn.Enabled = true;
+                        if (scanStatus != null) scanStatus.Text = $"✅ Abgefragt: {DateTime.Now:HH:mm}";
+                        statusLabel.Text = $"Hardware/Software für {ip} gespeichert";
+                    }));
+                });
+            }
+            else
+            {
+                // Remote — Anmeldedaten abfragen
+                using (var form = new RemoteConnectionForm())
+                {
+                    form.SetIP(ip); // IP vorausfüllen
+                    if (form.ShowDialog(this) != DialogResult.OK)
+                    {
+                        if (scanBtn != null) scanBtn.Enabled = true;
+                        if (scanStatus != null) scanStatus.Text = "";
+                        return;
+                    }
+
+                    string username = form.Username;
+                    string password = form.Password;
+
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try
+                        {
+                            string hw = hardwareManager.GetRemoteHardwareInfo(ip, username, password);
+                            var sw = softwareManager.GetRemoteSoftware(ip, username, password);
+                            string pcName = ip;
+                            foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
+                            dbManager.CheckForUpdates(sw, pcName);
+                            dbManager.SaveSoftware(sw);
+                            dbManager.SaveHardwareInfo(ip, $"=== Remote abgefragt: {DateTime.Now:dd.MM.yyyy HH:mm} ===\n{hw}");
+
+                            Invoke(new MethodInvoker(() =>
+                            {
+                                hardwareInfoTextBox.Text = hw;
+                                DisplaySoftwareGrid(sw, ip);
+                                UpdateHardwareLabels(ip, true);
+                                ShowDeviceDetails(ip);
+                                if (scanBtn != null) scanBtn.Enabled = true;
+                                if (scanStatus != null) scanStatus.Text = $"✅ Remote abgefragt: {DateTime.Now:HH:mm}";
+                                statusLabel.Text = $"Hardware/Software für {ip} gespeichert";
+                            }));
+                        }
+                        catch (Exception ex)
+                        {
+                            Invoke(new MethodInvoker(() =>
+                            {
+                                MessageBox.Show($"Fehler: {ex.Message}", "Fehler",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                if (scanBtn != null) scanBtn.Enabled = true;
+                                if (scanStatus != null) scanStatus.Text = "❌ Fehler";
+                            }));
+                        }
+                    });
+                }
+            }
+        }
+
+        private bool IsLocalIP(string ip)
+        {
+            try
+            {
+                var localIPs = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
+                                    .Select(a => a.ToString());
+                return ip == "127.0.0.1" || ip == "::1" || localIPs.Contains(ip);
+            }
+            catch { return false; }
+        }
+
         private void DisplaySoftwareGrid(List<SoftwareInfo> software, string remotePC = "")
         {
             currentRemotePC = remotePC;
@@ -1024,6 +1172,14 @@ namespace NmapInventory
             hw.AppendLine($"Hostname    : {device.Hostname ?? "-"}");
             hw.AppendLine($"Status      : {device.Status ?? "-"}");
             hw.AppendLine($"Letzte Scan : {device.Zeitstempel}");
+
+            // WMI Hardware-Info falls vorhanden (von Hardware/Software-Abfrage)
+            string wmiInfo = dbManager.GetLatestHardwareInfo(ipAddress);
+            if (!string.IsNullOrEmpty(wmiInfo))
+            {
+                hw.AppendLine();
+                hw.AppendLine(wmiInfo);
+            }
 
             // OS aus letztem Nmap-Detail
             var nmapDetail = dbManager.GetLatestNmapDetail(ipAddress);

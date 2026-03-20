@@ -46,14 +46,14 @@ namespace NmapInventory
         {
             Text = "Remote Verbindung";
             Width = 500; Height = 320;
-            StartPosition = FormStartPosition.CenterScreen;
+            StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
 
-            var ipTb = new TextBox { Location = new Point(150, 30), Width = 300 };
+            var ipTb = new TextBox { Name = "ipTextBox", Location = new Point(150, 30), Width = 300 };
             var userTb = new TextBox { Location = new Point(150, 70), Width = 300, Text = Environment.UserName };
             var passTb = new TextBox { Location = new Point(150, 110), Width = 300, UseSystemPasswordChar = true };
 
-            var okBtn = new Button { Text = "Verbinden", Location = new Point(150, 210), Width = 100, DialogResult = DialogResult.OK, BackColor = Color.LightGreen };
+            var okBtn = new Button { Text = "Verbinden", Location = new Point(150, 210), Width = 100, DialogResult = DialogResult.OK };
             var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 210), Width = 100, DialogResult = DialogResult.Cancel };
 
             okBtn.Click += (s, e) =>
@@ -69,17 +69,25 @@ namespace NmapInventory
             };
 
             Controls.AddRange(new Control[] {
-                new Label { Text = "Computer-IP:", Location = new Point(20, 33), AutoSize = true },
+                new Label { Text = "Computer-IP:",  Location = new Point(20, 33),  AutoSize = true },
                 ipTb,
-                new Label { Text = "Benutzername:", Location = new Point(20, 73), AutoSize = true },
+                new Label { Text = "Benutzername:", Location = new Point(20, 73),  AutoSize = true },
                 userTb,
-                new Label { Text = "Passwort:", Location = new Point(20, 113), AutoSize = true },
+                new Label { Text = "Passwort:",     Location = new Point(20, 113), AutoSize = true },
                 passTb,
-                new Label { Text = "Hinweis: Für Remote-Zugriff wird ein Passwort benötigt.\nBei leerem Passwort wird nur WMI Registry verwendet.", Location = new Point(20, 150), Width = 450, Height = 50, ForeColor = Color.DarkBlue },
+                new Label { Text = "Hinweis: Für Remote-Zugriff wird ein Passwort benötigt.\nBei leerem Passwort wird nur WMI Registry verwendet.",
+                    Location = new Point(20, 150), Width = 450, Height = 50, ForeColor = Color.DarkBlue },
                 okBtn, cancelBtn
             });
             AcceptButton = okBtn;
             CancelButton = cancelBtn;
+        }
+
+        /// <summary>IP-Feld vorausfüllen — z.B. wenn aus dem Geräte-Panel aufgerufen.</summary>
+        public void SetIP(string ip)
+        {
+            var tb = Controls.Find("ipTextBox", false).FirstOrDefault() as TextBox;
+            if (tb != null) tb.Text = ip;
         }
     }
 
@@ -177,7 +185,7 @@ namespace NmapInventory
                 combo.Items.Add(new ComboCustomerItem { ID = customer.ID, Name = customer.Name });
             if (combo.Items.Count > 0) combo.SelectedIndex = 0;
 
-            var okBtn = new Button { Text = "OK", Location = new Point(150, 120), Width = 100, DialogResult = DialogResult.OK, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 10) };
+            var okBtn = new Button { Text = "OK", Location = new Point(150, 120), Width = 100, DialogResult = DialogResult.OK, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 120), Width = 100, DialogResult = DialogResult.Cancel, Font = new Font("Segoe UI", 10) };
 
             okBtn.Click += (s, e) =>
@@ -266,7 +274,7 @@ namespace NmapInventory
             PopulateList(allDevices);
 
             // --- Alle / Keine ---
-            var selectAllBtn = new Button { Text = "Alle auswählen", Location = new Point(10, 488), Width = 130, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 10) };
+            var selectAllBtn = new Button { Text = "Alle auswählen", Location = new Point(10, 488), Width = 130, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
             selectAllBtn.Click += (s, e) => { for (int i = 0; i < checkedListBox.Items.Count; i++) checkedListBox.SetItemChecked(i, true); };
 
             var selectNoneBtn = new Button { Text = "Keine", Location = new Point(150, 488), Width = 80, Font = new Font("Segoe UI", 10) };
@@ -282,7 +290,7 @@ namespace NmapInventory
                 Location = new Point(355, 538),
                 Width = 120,
                 Height = 30,
-                BackColor = Color.LightGreen,
+                BackColor = SystemColors.Control,
                 DialogResult = DialogResult.OK,
                 Font = new Font("Segoe UI", 10, FontStyle.Bold)
             };

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Management;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace NmapInventory
 {
@@ -328,48 +329,215 @@ namespace NmapInventory
             var info = new System.Text.StringBuilder();
             try
             {
-                var options = new ConnectionOptions { Authentication = AuthenticationLevel.PacketPrivacy };
-                if (!string.IsNullOrEmpty(username)) options.Impersonation = ImpersonationLevel.Impersonate;
+                var options = BuildConnectionOptions(username, password);
                 var scope = new ManagementScope($"\\\\{computerIP}\\root\\cimv2", options);
                 scope.Connect();
-                foreach (ManagementObject obj in new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Win32_OperatingSystem")).Get())
-                    info.AppendLine($"OS: {obj["Caption"]}");
-                foreach (ManagementObject obj in new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Win32_Processor")).Get())
-                    info.AppendLine($"CPU: {obj["Name"]}");
+
+                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT * FROM Win32_OperatingSystem")).Get())
+                {
+                    info.AppendLine($"OS:      {obj["Caption"]}");
+                    info.AppendLine($"Version: {obj["Version"]}");
+                    info.AppendLine($"Build:   {obj["BuildNumber"]}");
+                }
+                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT * FROM Win32_Processor")).Get())
+                {
+                    info.AppendLine($"CPU:     {obj["Name"]}");
+                    info.AppendLine($"Kerne:   {obj["NumberOfCores"]}");
+                    info.AppendLine($"Threads: {obj["NumberOfLogicalProcessors"]}");
+                }
+                long ram = 0;
+                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT * FROM Win32_PhysicalMemory")).Get())
+                    ram += long.Parse(obj["Capacity"].ToString());
+                if (ram > 0) info.AppendLine($"RAM:     {ram / (1024 * 1024 * 1024)} GB");
+
+                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT * FROM Win32_LogicalDisk WHERE DriveType=3")).Get())
+                {
+                    long size = long.Parse(obj["Size"].ToString());
+                    long free = long.Parse(obj["FreeSpace"].ToString());
+                    info.AppendLine($"Disk {obj["Name"]}: {size / (1024 * 1024 * 1024)} GB (Frei: {free / (1024 * 1024 * 1024)} GB)");
+                }
             }
-            catch (Exception ex) { info.AppendLine($"Fehler: {ex.Message}"); }
+            catch (UnauthorizedAccessException)
+            {
+                info.AppendLine("FEHLER: Zugriff verweigert.");
+                info.AppendLine("");
+                info.AppendLine("Mögliche Ursachen:");
+                info.AppendLine("1. Falsches Passwort / falscher Benutzername");
+                info.AppendLine("   → Format: 'COMPUTERNAME\\Administrator' oder nur 'Administrator'");
+                info.AppendLine("");
+                info.AppendLine("2. UAC blockiert Remote-WMI (Windows 10/11)");
+                info.AppendLine("   → Auf dem Zielgerät als Admin ausführen:");
+                info.AppendLine("   reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\"");
+                info.AppendLine("       /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f");
+                info.AppendLine("");
+                info.AppendLine("3. Windows-Firewall blockiert WMI");
+                info.AppendLine("   → Auf dem Zielgerät als Admin:");
+                info.AppendLine("   netsh advfirewall firewall set rule");
+                info.AppendLine("       group=\"Windows-Verwaltungsinstrumentation (WMI)\" new enable=yes");
+            }
+            catch (Exception ex)
+            {
+                info.AppendLine($"FEHLER: {ex.Message}");
+            }
             return info.ToString();
+        }
+
+        // Erstellt ConnectionOptions mit Credentials — Username und Password werden korrekt gesetzt
+        internal static ConnectionOptions BuildConnectionOptions(string username, string password)
+        {
+            var options = new ConnectionOptions
+            {
+                Authentication = AuthenticationLevel.PacketPrivacy,
+                Impersonation = ImpersonationLevel.Impersonate,
+                EnablePrivileges = true
+            };
+            if (!string.IsNullOrEmpty(username))
+            {
+                options.Username = username;
+                options.Password = password ?? "";
+            }
+            return options;
         }
     }
 
     public class SoftwareManager
     {
+        // Registry-Pfade wo Windows installierte Software speichert
+        private static readonly string[] REG_PATHS = {
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        };
+
+        // ── Lokal: Registry direkt auslesen ──────────────────
         public List<SoftwareInfo> GetInstalledSoftware()
         {
             var software = new List<SoftwareInfo>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                foreach (ManagementObject obj in new ManagementObjectSearcher("SELECT * FROM Win32_Product").Get())
-                    software.Add(new SoftwareInfo { Name = obj["Name"]?.ToString() ?? "", Version = obj["Version"]?.ToString() ?? "", Publisher = obj["Vendor"]?.ToString() ?? "", InstallDate = obj["InstallDate"]?.ToString() ?? "" });
+                foreach (var regPath in REG_PATHS)
+                {
+                    using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(regPath))
+                    {
+                        if (key == null) continue;
+                        foreach (var subKeyName in key.GetSubKeyNames())
+                        {
+                            try
+                            {
+                                using (var sub = key.OpenSubKey(subKeyName))
+                                {
+                                    if (sub == null) continue;
+                                    string name = sub.GetValue("DisplayName")?.ToString();
+                                    if (string.IsNullOrWhiteSpace(name)) continue;
+                                    // Duplikate überspringen (32/64 bit)
+                                    if (!seen.Add(name)) continue;
+
+                                    software.Add(new SoftwareInfo
+                                    {
+                                        Name = name,
+                                        Version = sub.GetValue("DisplayVersion")?.ToString() ?? "",
+                                        Publisher = sub.GetValue("Publisher")?.ToString() ?? "",
+                                        InstallDate = sub.GetValue("InstallDate")?.ToString() ?? "",
+                                        InstallLocation = sub.GetValue("InstallLocation")?.ToString() ?? "",
+                                        Source = regPath.Contains("WOW6432") ? "x86" : "x64"
+                                    });
+                                }
+                            }
+                            catch { /* einzelner Eintrag fehlerhaft → überspringen */ }
+                        }
+                    }
+                }
             }
-            catch (Exception ex) { software.Add(new SoftwareInfo { Name = $"Fehler: {ex.Message}" }); }
-            return software;
+            catch (Exception ex)
+            {
+                software.Add(new SoftwareInfo { Name = $"Fehler: {ex.Message}" });
+            }
+
+            return software.OrderBy(s => s.Name).ToList();
         }
 
+        // ── Remote: Registry direkt über WMI StdRegProv auslesen ─
+        // Kein PowerShell, kein Admin-Share, kein Temp-File nötig.
+        // StdRegProv ist eine WMI-Klasse die Remote-Registry-Zugriff erlaubt.
         public List<SoftwareInfo> GetRemoteSoftware(string computerIP, string username, string password)
         {
             var software = new List<SoftwareInfo>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             try
             {
-                var options = new ConnectionOptions { Authentication = AuthenticationLevel.PacketPrivacy };
-                if (!string.IsNullOrEmpty(username)) options.Impersonation = ImpersonationLevel.Impersonate;
-                var scope = new ManagementScope($"\\\\{computerIP}\\root\\cimv2", options);
+                var options = HardwareManager.BuildConnectionOptions(username, password);
+                // StdRegProv liegt in root\default, nicht in root\cimv2
+                var scope = new ManagementScope($"\\\\{computerIP}\\root\\default", options);
                 scope.Connect();
-                foreach (ManagementObject obj in new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Win32_Product")).Get())
-                    software.Add(new SoftwareInfo { Name = obj["Name"]?.ToString() ?? "", Version = obj["Version"]?.ToString() ?? "", Publisher = obj["Vendor"]?.ToString() ?? "", InstallDate = obj["InstallDate"]?.ToString() ?? "" });
+
+                const uint HKLM = 0x80000002;
+                string[] regPaths = {
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                    @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+                };
+
+                var reg = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+
+                foreach (var regPath in regPaths)
+                {
+                    // Alle Unterschlüssel auflisten
+                    var inParams = reg.GetMethodParameters("EnumKey");
+                    inParams["hDefKey"] = HKLM;
+                    inParams["sSubKeyName"] = regPath;
+                    var outParams = reg.InvokeMethod("EnumKey", inParams, null);
+
+                    var subKeys = outParams["sNames"] as string[];
+                    if (subKeys == null) continue;
+
+                    foreach (var subKey in subKeys)
+                    {
+                        try
+                        {
+                            string fullPath = $"{regPath}\\{subKey}";
+                            string name = ReadRegString(reg, HKLM, fullPath, "DisplayName");
+                            if (string.IsNullOrWhiteSpace(name)) continue;
+                            if (!seen.Add(name)) continue; // Duplikat
+
+                            software.Add(new SoftwareInfo
+                            {
+                                Name = name,
+                                Version = ReadRegString(reg, HKLM, fullPath, "DisplayVersion"),
+                                Publisher = ReadRegString(reg, HKLM, fullPath, "Publisher"),
+                                InstallDate = ReadRegString(reg, HKLM, fullPath, "InstallDate"),
+                                InstallLocation = ReadRegString(reg, HKLM, fullPath, "InstallLocation"),
+                                Source = regPath.Contains("WOW6432") ? "x86" : "x64"
+                            });
+                        }
+                        catch { /* einzelner Eintrag fehlerhaft → überspringen */ }
+                    }
+                }
             }
-            catch (Exception ex) { software.Add(new SoftwareInfo { Name = $"Fehler: {ex.Message}" }); }
-            return software;
+            catch (Exception ex)
+            {
+                software.Add(new SoftwareInfo { Name = $"Fehler: {ex.Message}" });
+            }
+
+            return software.OrderBy(s => s.Name).ToList();
+        }
+
+        // Liest einen einzelnen Registry-String-Wert über StdRegProv
+        private string ReadRegString(ManagementClass reg, uint hive, string keyPath, string valueName)
+        {
+            try
+            {
+                var inParams = reg.GetMethodParameters("GetStringValue");
+                inParams["hDefKey"] = hive;
+                inParams["sSubKeyName"] = keyPath;
+                inParams["sValueName"] = valueName;
+                var outParams = reg.InvokeMethod("GetStringValue", inParams, null);
+                return outParams["sValue"]?.ToString() ?? "";
+            }
+            catch { return ""; }
         }
 
         public void UpdateSoftware(string softwareName, string computerIP, Label statusLabel)
@@ -379,4 +547,5 @@ namespace NmapInventory
             statusLabel.Text = "Bereit";
         }
     }
+
 }
