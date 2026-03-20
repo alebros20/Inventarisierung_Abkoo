@@ -125,7 +125,7 @@ namespace NmapInventory
                     // Nichts bekannt → IP als letzter Fallback
                     hostname = ip;
 
-                devices.Add(new DeviceInfo
+                var dev = new DeviceInfo
                 {
                     IP = ip,
                     Hostname = hostname,
@@ -134,7 +134,9 @@ namespace NmapInventory
                     Status = "up",
                     Ports = "-",
                     OpenPorts = new List<NmapPort>()
-                });
+                };
+                dev.DeviceType = DeviceTypeHelper.Detect(dev);
+                devices.Add(dev);
             }
 
             foreach (var line in lines)
@@ -266,6 +268,7 @@ namespace NmapInventory
                         ? string.Join(", ", device.OpenPorts.Select(p =>
                             $"{p.Port}/{p.Protocol} {GetFernwartungsLabel(p.Port, p.Service)}"))
                         : "Keine Fernwartungs-Ports offen";
+                    device.DeviceType = DeviceTypeHelper.Detect(device); // nach Ports + OS setzen
                     devices.Add(device);
                 }
             }
@@ -302,91 +305,214 @@ namespace NmapInventory
 
     public class HardwareManager
     {
+        // ── Lokal: WMI-Kurzübersicht ──────────────────────────
         public string GetHardwareInfo()
         {
-            var info = new System.Text.StringBuilder();
+            var sb = new System.Text.StringBuilder();
             try
             {
-                foreach (ManagementObject obj in new ManagementObjectSearcher("SELECT * FROM Win32_OperatingSystem").Get())
-                { info.AppendLine($"OS: {obj["Caption"]}"); info.AppendLine($"Version: {obj["Version"]}"); info.AppendLine($"Build: {obj["BuildNumber"]}"); }
-                foreach (ManagementObject obj in new ManagementObjectSearcher("SELECT * FROM Win32_Processor").Get())
-                { info.AppendLine($"CPU: {obj["Name"]}"); info.AppendLine($"Cores: {obj["NumberOfCores"]}"); info.AppendLine($"Threads: {obj["NumberOfLogicalProcessors"]}"); }
-                long totalRAM = 0;
-                foreach (ManagementObject obj in new ManagementObjectSearcher("SELECT * FROM Win32_PhysicalMemory").Get())
-                    totalRAM += long.Parse(obj["Capacity"].ToString());
-                info.AppendLine($"RAM: {totalRAM / (1024 * 1024 * 1024)} GB");
-                foreach (ManagementObject obj in new ManagementObjectSearcher("SELECT * FROM Win32_LogicalDisk WHERE DriveType=3").Get())
-                { string d = obj["Name"].ToString(); long s = long.Parse(obj["Size"].ToString()); long f = long.Parse(obj["FreeSpace"].ToString()); info.AppendLine($"Disk {d}: {s / (1024 * 1024 * 1024)} GB (Free: {f / (1024 * 1024 * 1024)} GB)"); }
-                foreach (ManagementObject obj in new ManagementObjectSearcher("SELECT * FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=true").Get())
-                { var ips = obj["IPAddress"] as string[]; if (ips?.Length > 0) info.AppendLine($"IP: {ips[0]}"); }
+                ManagementObjectCollection Get(string wql) =>
+                    new ManagementObjectSearcher(wql).Get();
+                string Val(ManagementBaseObject o, string k)
+                {
+                    try { return o[k]?.ToString() ?? ""; } catch { return ""; }
+                }
+
+                sb.AppendLine("=== Systemübersicht ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_ComputerSystem"))
+                    sb.AppendLine($"Computer: {Val(o, "Name")}  Hersteller: {Val(o, "Manufacturer")}  Modell: {Val(o, "Model")}");
+
+                sb.AppendLine("\n=== Betriebssystem ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_OperatingSystem"))
+                    sb.AppendLine($"{Val(o, "Caption")}  Version {Val(o, "Version")}  Build {Val(o, "BuildNumber")}");
+
+                sb.AppendLine("\n=== Prozessor ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_Processor"))
+                    sb.AppendLine($"{Val(o, "Name")}  {Val(o, "NumberOfCores")} Kerne / {Val(o, "NumberOfLogicalProcessors")} Threads");
+
+                long ram = 0;
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_PhysicalMemory"))
+                { long.TryParse(Val(o, "Capacity"), out long c); ram += c; }
+                sb.AppendLine($"\n=== RAM ===\n{ram / (1024 * 1024 * 1024)} GB gesamt");
+
+                sb.AppendLine("\n=== Laufwerke ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_LogicalDisk WHERE DriveType=3"))
+                {
+                    long.TryParse(Val(o, "Size"), out long s);
+                    long.TryParse(Val(o, "FreeSpace"), out long f);
+                    sb.AppendLine($"{Val(o, "Name")} ({Val(o, "VolumeName")})  {s / (1024 * 1024 * 1024)} GB gesamt, {f / (1024 * 1024 * 1024)} GB frei");
+                }
             }
-            catch (Exception ex) { info.AppendLine($"Fehler: {ex.Message}"); }
-            return info.ToString();
+            catch (Exception ex) { sb.AppendLine($"Fehler: {ex.Message}"); }
+            return sb.ToString();
         }
 
+        // ── Remote: msinfo32 /computer — exakt wie msinfo32 ──
         public string GetRemoteHardwareInfo(string computerIP, string username, string password)
         {
-            var info = new System.Text.StringBuilder();
+            try
+            {
+                string tempFile = System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(), $"msinfo_{Guid.NewGuid():N}.txt");
+
+                // msinfo32 /computer verbindet sich direkt zum Zielrechner
+                // und exportiert exakt dieselben Daten wie die msinfo32-Oberfläche
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "msinfo32.exe",
+                    Arguments = $"/computer {computerIP} /report \"{tempFile}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (var proc = Process.Start(psi))
+                {
+                    // msinfo32 remote kann 30-60 Sek dauern
+                    bool finished = proc.WaitForExit(90000);
+                    if (!finished)
+                    {
+                        proc.Kill();
+                        return "Zeitüberschreitung — msinfo32 hat nicht innerhalb von 90 Sekunden geantwortet.\n" +
+                               "Bitte prüfe ob der Zielrechner erreichbar ist.";
+                    }
+                }
+
+                if (!System.IO.File.Exists(tempFile))
+                    return FallbackRemoteWmi(computerIP, username, password);
+
+                // msinfo32 schreibt Unicode (UTF-16)
+                string content = System.IO.File.ReadAllText(tempFile, System.Text.Encoding.Unicode);
+                System.IO.File.Delete(tempFile);
+
+                if (string.IsNullOrWhiteSpace(content))
+                    return FallbackRemoteWmi(computerIP, username, password);
+
+                return content;
+            }
+            catch (Exception)
+            {
+                // msinfo32 nicht verfügbar oder Fehler → WMI-Fallback
+                return FallbackRemoteWmi(computerIP, username, password);
+            }
+        }
+
+        // Fallback wenn msinfo32 /computer nicht klappt: vollständige WMI-Abfrage
+        private string FallbackRemoteWmi(string computerIP, string username, string password)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("(msinfo32 nicht verfügbar — WMI-Abfrage)\n");
             try
             {
                 var options = BuildConnectionOptions(username, password);
                 var scope = new ManagementScope($"\\\\{computerIP}\\root\\cimv2", options);
                 scope.Connect();
 
-                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT * FROM Win32_OperatingSystem")).Get())
+                ManagementObjectCollection Get(string wql) =>
+                    new ManagementObjectSearcher(scope, new ObjectQuery(wql)).Get();
+                string Val(ManagementBaseObject o, string k)
                 {
-                    info.AppendLine($"OS:      {obj["Caption"]}");
-                    info.AppendLine($"Version: {obj["Version"]}");
-                    info.AppendLine($"Build:   {obj["BuildNumber"]}");
+                    try { return o[k]?.ToString() ?? ""; } catch { return ""; }
                 }
-                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT * FROM Win32_Processor")).Get())
-                {
-                    info.AppendLine($"CPU:     {obj["Name"]}");
-                    info.AppendLine($"Kerne:   {obj["NumberOfCores"]}");
-                    info.AppendLine($"Threads: {obj["NumberOfLogicalProcessors"]}");
-                }
-                long ram = 0;
-                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT * FROM Win32_PhysicalMemory")).Get())
-                    ram += long.Parse(obj["Capacity"].ToString());
-                if (ram > 0) info.AppendLine($"RAM:     {ram / (1024 * 1024 * 1024)} GB");
 
-                foreach (ManagementObject obj in new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT * FROM Win32_LogicalDisk WHERE DriveType=3")).Get())
+                sb.AppendLine("=== Systemübersicht ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_ComputerSystem"))
                 {
-                    long size = long.Parse(obj["Size"].ToString());
-                    long free = long.Parse(obj["FreeSpace"].ToString());
-                    info.AppendLine($"Disk {obj["Name"]}: {size / (1024 * 1024 * 1024)} GB (Frei: {free / (1024 * 1024 * 1024)} GB)");
+                    sb.AppendLine($"Computername     : {Val(o, "Name")}");
+                    sb.AppendLine($"Hersteller       : {Val(o, "Manufacturer")}");
+                    sb.AppendLine($"Modell           : {Val(o, "Model")}");
+                    sb.AppendLine($"Systemtyp        : {Val(o, "SystemType")}");
+                    long.TryParse(Val(o, "TotalPhysicalMemory"), out long ram);
+                    sb.AppendLine($"Physischer RAM   : {ram / (1024 * 1024 * 1024)} GB");
                 }
+
+                sb.AppendLine("\n=== Betriebssystem ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_OperatingSystem"))
+                {
+                    sb.AppendLine($"BS-Name          : {Val(o, "Caption")}");
+                    sb.AppendLine($"Version          : {Val(o, "Version")}");
+                    sb.AppendLine($"Build            : {Val(o, "BuildNumber")}");
+                    sb.AppendLine($"Architektur      : {Val(o, "OSArchitecture")}");
+                    sb.AppendLine($"Letzter Start    : {Val(o, "LastBootUpTime")}");
+                }
+
+                sb.AppendLine("\n=== BIOS ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_BIOS"))
+                {
+                    sb.AppendLine($"Version          : {Val(o, "SMBIOSBIOSVersion")}");
+                    sb.AppendLine($"Hersteller       : {Val(o, "Manufacturer")}");
+                    sb.AppendLine($"Datum            : {Val(o, "ReleaseDate")}");
+                    sb.AppendLine($"Seriennummer     : {Val(o, "SerialNumber")}");
+                }
+
+                sb.AppendLine("\n=== Prozessor ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_Processor"))
+                {
+                    sb.AppendLine($"Name             : {Val(o, "Name")}");
+                    sb.AppendLine($"Kerne            : {Val(o, "NumberOfCores")}");
+                    sb.AppendLine($"Logische Proz.   : {Val(o, "NumberOfLogicalProcessors")}");
+                    sb.AppendLine($"Max. Takt        : {Val(o, "MaxClockSpeed")} MHz");
+                }
+
+                sb.AppendLine("\n=== Arbeitsspeicher (Module) ===");
+                int slot = 0;
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_PhysicalMemory"))
+                {
+                    slot++;
+                    long.TryParse(Val(o, "Capacity"), out long cap);
+                    sb.AppendLine($"Modul {slot}          : {Val(o, "DeviceLocator")}  {cap / (1024 * 1024 * 1024)} GB  {Val(o, "Speed")} MHz  {Val(o, "Manufacturer")}");
+                }
+
+                sb.AppendLine("\n=== Laufwerke ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_DiskDrive"))
+                {
+                    long.TryParse(Val(o, "Size"), out long s);
+                    sb.AppendLine($"Modell           : {Val(o, "Model")}  {s / (1024 * 1024 * 1024)} GB  {Val(o, "InterfaceType")}");
+                }
+
+                sb.AppendLine("\n=== Logische Datenträger ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_LogicalDisk WHERE DriveType=3"))
+                {
+                    long.TryParse(Val(o, "Size"), out long s);
+                    long.TryParse(Val(o, "FreeSpace"), out long f);
+                    sb.AppendLine($"{Val(o, "Name")} ({Val(o, "VolumeName")})  {s / (1024 * 1024 * 1024)} GB gesamt, {f / (1024 * 1024 * 1024)} GB frei  {Val(o, "FileSystem")}");
+                }
+
+                sb.AppendLine("\n=== Grafikkarte ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_VideoController"))
+                {
+                    long.TryParse(Val(o, "AdapterRAM"), out long vram);
+                    sb.AppendLine($"{Val(o, "Name")}  {vram / (1024 * 1024)} MB  Treiber: {Val(o, "DriverVersion")}");
+                }
+
+                sb.AppendLine("\n=== Netzwerkadapter ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=true"))
+                {
+                    var ips = o["IPAddress"] as string[];
+                    sb.AppendLine($"{Val(o, "Description")}");
+                    sb.AppendLine($"  MAC: {Val(o, "MACAddress")}  IP: {(ips?.Length > 0 ? string.Join(", ", ips) : "-")}");
+                }
+
+                sb.AppendLine("\n=== Drucker ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_Printer"))
+                    sb.AppendLine($"{Val(o, "Name")}  Standard: {Val(o, "Default")}");
+
+                sb.AppendLine("\n=== Autostart ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_StartupCommand"))
+                    sb.AppendLine($"{Val(o, "Name")} — {Val(o, "Command")}  [{Val(o, "Location")}]");
+
+                sb.AppendLine("\n=== Laufende Dienste ===");
+                foreach (ManagementObject o in Get("SELECT * FROM Win32_Service WHERE State='Running'"))
+                    sb.AppendLine($"{Val(o, "DisplayName"),-45} [{Val(o, "Name")}]");
             }
             catch (UnauthorizedAccessException)
             {
-                info.AppendLine("FEHLER: Zugriff verweigert.");
-                info.AppendLine("");
-                info.AppendLine("Mögliche Ursachen:");
-                info.AppendLine("1. Falsches Passwort / falscher Benutzername");
-                info.AppendLine("   → Format: 'COMPUTERNAME\\Administrator' oder nur 'Administrator'");
-                info.AppendLine("");
-                info.AppendLine("2. UAC blockiert Remote-WMI (Windows 10/11)");
-                info.AppendLine("   → Auf dem Zielgerät als Admin ausführen:");
-                info.AppendLine("   reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\"");
-                info.AppendLine("       /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f");
-                info.AppendLine("");
-                info.AppendLine("3. Windows-Firewall blockiert WMI");
-                info.AppendLine("   → Auf dem Zielgerät als Admin:");
-                info.AppendLine("   netsh advfirewall firewall set rule");
-                info.AppendLine("       group=\"Windows-Verwaltungsinstrumentation (WMI)\" new enable=yes");
+                sb.AppendLine("\nFEHLER: Zugriff verweigert.");
+                sb.AppendLine("→ UAC-Fix auf Zielgerät: reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f");
             }
-            catch (Exception ex)
-            {
-                info.AppendLine($"FEHLER: {ex.Message}");
-            }
-            return info.ToString();
+            catch (Exception ex) { sb.AppendLine($"\nFEHLER: {ex.Message}"); }
+            return sb.ToString();
         }
 
-        // Erstellt ConnectionOptions mit Credentials — Username und Password werden korrekt gesetzt
         internal static ConnectionOptions BuildConnectionOptions(string username, string password)
         {
             var options = new ConnectionOptions
