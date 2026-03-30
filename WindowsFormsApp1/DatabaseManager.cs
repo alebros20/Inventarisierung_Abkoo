@@ -7,7 +7,380 @@ namespace NmapInventory
 {
     public class DatabaseManager
     {
-        private const string DB_PATH = "nmap_inventory.db";
+        private static readonly string DB_PATH = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "nmap_inventory.db");
+
+        // Per-customer DB files will be named: nmap_customer_{customerId}.db
+        private string GetCustomerDbPath(int customerId)
+            => System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"nmap_customer_{customerId}.db");
+
+        private void EnsureCustomerDatabaseExists(int customerId)
+        {
+            var path = GetCustomerDbPath(customerId);
+            if (System.IO.File.Exists(path)) return;
+
+            using (var conn = new SQLiteConnection($"Data Source={path};Version=3;"))
+            {
+                conn.Open();
+                string create = @"
+                    CREATE TABLE IF NOT EXISTS Devices (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        IP TEXT UNIQUE NOT NULL,
+                        Hostname TEXT,
+                        MacAddress TEXT UNIQUE,
+                        FirstSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        LastSeen DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS DeviceScanHistory (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        Status TEXT,
+                        Ports TEXT,
+                        ScanTime DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS DeviceMacHistory (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        MacAddress TEXT NOT NULL,
+                        IPAddress TEXT,
+                        Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS DeviceNmapDetails (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        OS TEXT,
+                        OSDetails TEXT,
+                        Vendor TEXT,
+                        Ports TEXT,
+                        PortsJson TEXT,
+                        RawOutput TEXT,
+                        ScanTime DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS DeviceHardwareInfo (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        HardwareText TEXT,
+                        QueryTime DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS DevicePorts (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        Port INTEGER NOT NULL,
+                        Protocol TEXT,
+                        State TEXT,
+                        Service TEXT,
+                        Version TEXT,
+                        Banner TEXT,
+                        ScanTime DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS DeviceSoftware (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        Name TEXT NOT NULL,
+                        Version TEXT,
+                        Publisher TEXT,
+                        InstallLocation TEXT,
+                        InstallDate TEXT,
+                        Source TEXT,
+                        QueryTime DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_device_ports ON DevicePorts(DeviceID);
+                ";
+                using (var cmd = new SQLiteCommand(create, conn)) cmd.ExecuteNonQuery();
+            }
+
+        }
+
+        // Public wrapper so other parts of the app can request syncing a device into the per-customer DB
+        public void SyncDeviceToCustomerDb(DeviceInfo dev, int customerId)
+        {
+            if (dev == null) return;
+            AddOrUpdateDeviceInCustomerDb(dev, customerId);
+        }
+
+        /// <summary>
+        /// Aggregiert Geräte-Informationen aus allen per-Kunden Datenbanken.
+        /// Liefert pro Kunde ein paar Kennzahlen (Anzahl Geräte, Geräte mit MAC, RDP/SSH Vorkommen).
+        /// </summary>
+        public List<(int CustomerID, string CustomerName, int DeviceCount, int DevicesWithMac, int RdpDevices, int SshDevices)> GetPivotDeviceSummary()
+        {
+            var result = new List<(int, string, int, int, int, int)>();
+            var customers = GetCustomers();
+            foreach (var c in customers)
+            {
+                int deviceCount = 0, devicesWithMac = 0, rdp = 0, ssh = 0;
+                try
+                {
+                    var path = GetCustomerDbPath(c.ID);
+                    if (!System.IO.File.Exists(path))
+                    {
+                        result.Add((c.ID, c.Name, 0, 0, 0, 0));
+                        continue;
+                    }
+
+                    using (var conn = new SQLiteConnection($"Data Source={path};Version=3;"))
+                    {
+                        conn.Open();
+                        using (var cmd = new SQLiteCommand("SELECT COUNT(*) FROM Devices", conn))
+                        {
+                            var r = cmd.ExecuteScalar(); deviceCount = r != null ? Convert.ToInt32(r) : 0;
+                        }
+                        using (var cmd = new SQLiteCommand("SELECT COUNT(*) FROM Devices WHERE MacAddress IS NOT NULL AND MacAddress != ''", conn))
+                        {
+                            var r = cmd.ExecuteScalar(); devicesWithMac = r != null ? Convert.ToInt32(r) : 0;
+                        }
+                        using (var cmd = new SQLiteCommand(@"SELECT COUNT(DISTINCT DeviceID) FROM DevicePorts WHERE Port = 3389", conn))
+                        {
+                            var r = cmd.ExecuteScalar(); rdp = r != null ? Convert.ToInt32(r) : 0;
+                        }
+                        using (var cmd = new SQLiteCommand(@"SELECT COUNT(DISTINCT DeviceID) FROM DevicePorts WHERE Port = 22", conn))
+                        {
+                            var r = cmd.ExecuteScalar(); ssh = r != null ? Convert.ToInt32(r) : 0;
+                        }
+                    }
+                }
+                catch { /* ignore per-customer DB errors */ }
+                result.Add((c.ID, c.Name, deviceCount, devicesWithMac, rdp, ssh));
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Lädt Gerätezeilen aus allen per-Kunden Datenbanken.
+        /// Unterstützte Filter: "All" (keine), "HasMac" (nur Geräte mit MAC), "Port" (filterValue = Portnummer als string)
+        /// Liefert Tuple: CustomerID, CustomerName, IP, Hostname, MacAddress, Ports (kommagetrennt), HasRdp, HasSsh
+        /// </summary>
+        public List<(int CustomerID, string CustomerName, string IP, string Hostname, string MacAddress, string Ports, bool HasRdp, bool HasSsh, string HardwareText, string SoftwareNames)> GetDevicesAcrossCustomers(string filterType = "All", string filterValue = null)
+        {
+            var rows = new List<(int, string, string, string, string, string, bool, bool, string, string)>();
+            var customers = GetCustomers();
+            foreach (var c in customers)
+            {
+                try
+                {
+                    var path = GetCustomerDbPath(c.ID);
+                    if (!System.IO.File.Exists(path)) continue;
+
+                    using (var conn = new SQLiteConnection($"Data Source={path};Version=3;"))
+                    {
+                        conn.Open();
+                        using (var cmd = new SQLiteCommand(@"SELECT IP, Hostname, MacAddress, ID FROM Devices", conn))
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string ip = reader["IP"]?.ToString();
+                                string hostname = reader["Hostname"]?.ToString();
+                                string mac = reader["MacAddress"]?.ToString();
+                                int deviceId = reader["ID"] != null ? Convert.ToInt32(reader["ID"]) : -1;
+
+                                // Load ports for this device
+                                var portList = new List<int>();
+                                using (var pcmd = new SQLiteCommand("SELECT Port FROM DevicePorts WHERE DeviceID=@ID", conn))
+                                {
+                                    pcmd.Parameters.AddWithValue("@ID", deviceId);
+                                    using (var pr = pcmd.ExecuteReader())
+                                        while (pr.Read()) portList.Add(Convert.ToInt32(pr["Port"]));
+                                }
+
+                                bool hasRdp = portList.Contains(3389);
+                                bool hasSsh = portList.Contains(22);
+                                string ports = portList.Count > 0 ? string.Join(",", portList) : "";
+
+                                // Load latest hardware text (if any)
+                                string hwText = "";
+                                using (var hcmd = new SQLiteCommand("SELECT HardwareText FROM DeviceHardwareInfo WHERE DeviceID=@ID ORDER BY QueryTime DESC LIMIT 1", conn))
+                                {
+                                    hcmd.Parameters.AddWithValue("@ID", deviceId);
+                                    var hres = hcmd.ExecuteScalar();
+                                    if (hres != null) hwText = hres.ToString();
+                                }
+
+                                // Load installed software names (comma separated)
+                                var swNames = new List<string>();
+                                using (var scmd = new SQLiteCommand("SELECT Name FROM DeviceSoftware WHERE DeviceID=@ID", conn))
+                                {
+                                    scmd.Parameters.AddWithValue("@ID", deviceId);
+                                    using (var sr = scmd.ExecuteReader())
+                                        while (sr.Read()) swNames.Add(sr["Name"]?.ToString() ?? "");
+                                }
+                                string softwareNames = swNames.Count > 0 ? string.Join(",", swNames.Where(s => !string.IsNullOrEmpty(s))) : "";
+
+                                // Apply filter
+                                bool include = true;
+                                if (filterType == "HasMac") include = !string.IsNullOrWhiteSpace(mac);
+                                else if (filterType == "Port")
+                                {
+                                    if (int.TryParse(filterValue, out int p)) include = portList.Contains(p);
+                                    else include = false;
+                                }
+
+                                if (include)
+                                    rows.Add((c.ID, c.Name, ip, hostname, mac, ports, hasRdp, hasSsh, hwText, softwareNames));
+                            }
+                        }
+                    }
+                }
+                catch { /* ignore per-customer DB errors */ }
+            }
+            return rows;
+        }
+
+        /// <summary>
+        /// Führt eine SQL-Abfrage (WHERE-Klausel) auf der per-customer DB aus und liefert Gerätedaten zurück.
+        /// </summary>
+        public List<(string IP, string Hostname, string MacAddress, string Ports, bool HasRdp, bool HasSsh, string HardwareText, string SoftwareNames)> RunDeviceQueryOnCustomerDb(int customerId, string whereClause, Dictionary<string, object> parameters = null)
+        {
+            var path = GetCustomerDbPath(customerId);
+            // If missing, fall back to central
+            if (!System.IO.File.Exists(path)) path = DB_PATH;
+            return RunDeviceQueryOnPath(path, whereClause, parameters);
+        }
+
+        /// <summary>
+        /// Führt die gleiche Abfrage gegen die zentrale DB aus.
+        /// </summary>
+        public List<(string IP, string Hostname, string MacAddress, string Ports, bool HasRdp, bool HasSsh, string HardwareText, string SoftwareNames)> RunDeviceQueryOnCentralDb(string whereClause, Dictionary<string, object> parameters = null)
+        {
+            return RunDeviceQueryOnPath(DB_PATH, whereClause, parameters);
+        }
+
+        public List<(string IP, string Hostname, string MacAddress, string Ports, bool HasRdp, bool HasSsh, string HardwareText, string SoftwareNames)> RunDeviceQueryOnPath(string path, string whereClause, Dictionary<string, object> parameters = null)
+        {
+            var results = new List<(string, string, string, string, bool, bool, string, string)>();
+            if (!System.IO.File.Exists(path)) return results;
+
+            using (var conn = new SQLiteConnection($"Data Source={path};Version=3;"))
+            {
+                conn.Open();
+                string sql = @"SELECT d.IP, d.Hostname, d.MacAddress,
+                    (SELECT group_concat(Port, ',') FROM DevicePorts WHERE DeviceID=d.ID) AS Ports,
+                    EXISTS(SELECT 1 FROM DevicePorts WHERE DeviceID=d.ID AND Port=3389) AS HasRdp,
+                    EXISTS(SELECT 1 FROM DevicePorts WHERE DeviceID=d.ID AND Port=22) AS HasSsh,
+                    (SELECT HardwareText FROM DeviceHardwareInfo WHERE DeviceID=d.ID ORDER BY QueryTime DESC LIMIT 1) AS HardwareText,
+                    (SELECT group_concat(Name, ',') FROM DeviceSoftware WHERE DeviceID=d.ID) AS SoftwareNames
+                  FROM Devices d";
+
+                if (!string.IsNullOrWhiteSpace(whereClause)) sql += " WHERE " + whereClause;
+
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    if (parameters != null)
+                        foreach (var kv in parameters)
+                            cmd.Parameters.AddWithValue(kv.Key, kv.Value ?? "");
+
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string ip = reader["IP"]?.ToString();
+                            string hostname = reader["Hostname"]?.ToString();
+                            string mac = reader["MacAddress"]?.ToString();
+                            string ports = reader["Ports"]?.ToString() ?? "";
+                            bool hasRdp = Convert.ToInt32(reader["HasRdp"] ?? 0) == 1;
+                            bool hasSsh = Convert.ToInt32(reader["HasSsh"] ?? 0) == 1;
+                            string hw = reader["HardwareText"]?.ToString() ?? "";
+                            string sw = reader["SoftwareNames"]?.ToString() ?? "";
+                            results.Add((ip, hostname, mac, ports, hasRdp, hasSsh, hw, sw));
+                        }
+                    }
+                }
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Findet alle nmap_*.db Dateien im Anwendungsverzeichnis (rekursiv) und gibt die Pfade zurück.
+        /// </summary>
+        public List<string> GetAllDatabaseFiles()
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            try
+            {
+                return System.IO.Directory.GetFiles(baseDir, "nmap_*.db", System.IO.SearchOption.AllDirectories).ToList();
+            }
+            catch { return new List<string>(); }
+        }
+
+        /// <summary>
+        /// Extracts customerId from filename if pattern matches nmap_customer_{id}.db
+        /// </summary>
+        public int? TryGetCustomerIdFromPath(string path)
+        {
+            try
+            {
+                var name = System.IO.Path.GetFileNameWithoutExtension(path);
+                if (name.StartsWith("nmap_customer_"))
+                {
+                    var part = name.Substring("nmap_customer_".Length);
+                    if (int.TryParse(part.Split('_')[0], out int id)) return id;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private void AddOrUpdateDeviceInCustomerDb(DeviceInfo dev, int customerId)
+        {
+            try
+            {
+                EnsureCustomerDatabaseExists(customerId);
+                var path = GetCustomerDbPath(customerId);
+                using (var conn = new SQLiteConnection($"Data Source={path};Version=3;"))
+                {
+                    conn.Open();
+                    // Try find by IP
+                    int existingID = -1;
+                    using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE IP = @IP", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@IP", dev.IP);
+                        var r = cmd.ExecuteScalar();
+                        if (r != null) existingID = Convert.ToInt32(r);
+                    }
+
+                    // If not found and MAC present, try by MAC
+                    if (existingID < 0 && !string.IsNullOrWhiteSpace(dev.MacAddress))
+                    {
+                        using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE MacAddress = @MAC", conn))
+                        {
+                            cmd.Parameters.AddWithValue("@MAC", dev.MacAddress.Trim().ToUpperInvariant());
+                            var r = cmd.ExecuteScalar();
+                            if (r != null) existingID = Convert.ToInt32(r);
+                        }
+                    }
+
+                    if (existingID > 0)
+                    {
+                        using (var cmd = new SQLiteCommand(@"UPDATE Devices SET Hostname=@Hostname, MacAddress=@MAC, IP=@IP, LastSeen=CURRENT_TIMESTAMP WHERE ID=@ID", conn))
+                        {
+                            cmd.Parameters.AddWithValue("@ID", existingID);
+                            cmd.Parameters.AddWithValue("@IP", dev.IP);
+                            cmd.Parameters.AddWithValue("@Hostname", dev.Hostname ?? "");
+                            cmd.Parameters.AddWithValue("@MAC", string.IsNullOrWhiteSpace(dev.MacAddress) ? (object)DBNull.Value : dev.MacAddress.Trim().ToUpperInvariant());
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                    else
+                    {
+                        using (var cmd = new SQLiteCommand("INSERT INTO Devices (IP, Hostname, MacAddress) VALUES (@IP, @Hostname, @MAC)", conn))
+                        {
+                            cmd.Parameters.AddWithValue("@IP", dev.IP);
+                            cmd.Parameters.AddWithValue("@Hostname", dev.Hostname ?? "");
+                            cmd.Parameters.AddWithValue("@MAC", string.IsNullOrWhiteSpace(dev.MacAddress) ? (object)DBNull.Value : dev.MacAddress.Trim().ToUpperInvariant());
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                }
+            }
+            catch { /* non-fatal */ }
+        }
 
         public void InitializeDatabase()
         {

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 
 namespace NmapInventory
@@ -42,52 +44,300 @@ namespace NmapInventory
         public string Username { get; private set; }
         public string Password { get; private set; }
 
+        private TextBox ipTb, userTb, passTb;
+        private CheckBox chkSave;
+        private ComboBox cmbSaved;
+
         public RemoteConnectionForm()
         {
             Text = "Remote Verbindung";
-            Width = 500; Height = 320;
+            Width = 520; Height = 370;
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
+            Font = new System.Drawing.Font("Segoe UI", 9);
 
-            var ipTb = new TextBox { Name = "ipTextBox", Location = new Point(150, 30), Width = 300 };
-            var userTb = new TextBox { Location = new Point(150, 70), Width = 300, Text = Environment.UserName };
-            var passTb = new TextBox { Location = new Point(150, 110), Width = 300, UseSystemPasswordChar = true };
+            // Gespeicherte Zugangsdaten laden
+            var saved = CredentialStore.GetAll();
 
-            var okBtn = new Button { Text = "Verbinden", Location = new Point(150, 210), Width = 100, DialogResult = DialogResult.OK };
-            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 210), Width = 100, DialogResult = DialogResult.Cancel };
+            // ── Gespeicherte Auswahl ──────────────────────────
+            var lblSaved = new Label { Text = "Gespeichert:", Location = new Point(20, 14), AutoSize = true };
+            cmbSaved = new ComboBox
+            {
+                Location = new Point(110, 11),
+                Width = 270,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cmbSaved.Items.Add("-- Neu eingeben --");
+            foreach (var c in saved)
+                cmbSaved.Items.Add(c);
+            cmbSaved.SelectedIndex = 0;
+
+            var btnDelete = new Button
+            {
+                Text = "🗑",
+                Location = new Point(388, 10),
+                Width = 30,
+                Height = 24,
+                Font = new System.Drawing.Font("Segoe UI", 9)
+            };
+
+            // ── Felder ────────────────────────────────────────
+            var sep = new Panel
+            {
+                Location = new Point(0, 40),
+                Width = 520,
+                Height = 1,
+                BackColor = System.Drawing.Color.FromArgb(200, 200, 200)
+            };
+
+            ipTb = new TextBox
+            {
+                Name = "ipTextBox",
+                Location = new Point(110, 52),
+                Width = 310,
+                Font = new System.Drawing.Font("Segoe UI", 10)
+            };
+            userTb = new TextBox
+            {
+                Location = new Point(110, 84),
+                Width = 310,
+                Text = Environment.UserName,
+                Font = new System.Drawing.Font("Segoe UI", 10)
+            };
+            passTb = new TextBox
+            {
+                Location = new Point(110, 116),
+                Width = 310,
+                UseSystemPasswordChar = true,
+                Font = new System.Drawing.Font("Segoe UI", 10)
+            };
+
+            // ── Speichern-Checkbox ────────────────────────────
+            chkSave = new CheckBox
+            {
+                Text = "Zugangsdaten verschlüsselt speichern",
+                Location = new Point(110, 150),
+                AutoSize = true,
+                Checked = true
+            };
+
+            var lblAlias = new Label { Text = "Bezeichnung:", Location = new Point(110, 178), AutoSize = true };
+            var aliasTb = new TextBox
+            {
+                Name = "aliasTb",
+                Location = new Point(200, 175),
+                Width = 220,
+                PlaceholderText = "z.B. Büro-PC"
+            };
+            chkSave.CheckedChanged += (s, e) => { lblAlias.Visible = chkSave.Checked; aliasTb.Visible = chkSave.Checked; };
+
+            var hinweis = new Label
+            {
+                Text = "Verschlüsselung via Windows DPAPI — nur auf diesem PC entschlüsselbar.",
+                Location = new Point(20, 210),
+                Size = new Size(470, 16),
+                Font = new System.Drawing.Font("Segoe UI", 8),
+                ForeColor = System.Drawing.Color.DarkSlateGray
+            };
+
+            // ── Buttons ───────────────────────────────────────
+            var okBtn = new Button
+            {
+                Text = "Verbinden",
+                Location = new Point(110, 235),
+                Width = 120,
+                Height = 28,
+                Font = new System.Drawing.Font("Segoe UI", 10, System.Drawing.FontStyle.Bold),
+                DialogResult = DialogResult.OK
+            };
+            var cancelBtn = new Button
+            {
+                Text = "Abbrechen",
+                Location = new Point(240, 235),
+                Width = 100,
+                Height = 28,
+                Font = new System.Drawing.Font("Segoe UI", 10),
+                DialogResult = DialogResult.Cancel
+            };
+
+            // Gespeicherten Eintrag laden wenn ausgewählt
+            cmbSaved.SelectedIndexChanged += (s, e) =>
+            {
+                if (cmbSaved.SelectedIndex <= 0) return;
+                var sel = cmbSaved.SelectedItem as CredentialEntry;
+                if (sel == null) return;
+                ipTb.Text = sel.IP;
+                userTb.Text = sel.Username;
+                passTb.Text = CredentialStore.Decrypt(sel.EncryptedPassword);
+                chkSave.Checked = false; // nicht automatisch nochmal speichern
+            };
+
+            // Gespeicherten Eintrag löschen
+            btnDelete.Click += (s, e) =>
+            {
+                if (cmbSaved.SelectedIndex <= 0) return;
+                var sel = cmbSaved.SelectedItem as CredentialEntry;
+                if (sel == null) return;
+                if (MessageBox.Show($"Eintrag '{sel.Alias}' löschen?", "Löschen",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    CredentialStore.Delete(sel.Alias);
+                    cmbSaved.Items.Remove(sel);
+                    cmbSaved.SelectedIndex = 0;
+                }
+            };
 
             okBtn.Click += (s, e) =>
             {
                 ComputerIP = ipTb.Text.Trim();
                 Username = userTb.Text.Trim();
                 Password = passTb.Text;
+
                 if (string.IsNullOrEmpty(ComputerIP))
                 {
-                    MessageBox.Show("Bitte gib eine Computer-IP ein!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show("Bitte IP eingeben!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     DialogResult = DialogResult.None;
+                    return;
+                }
+                if (string.IsNullOrEmpty(Username))
+                {
+                    MessageBox.Show("Bitte Benutzernamen eingeben!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+
+                // Zugangsdaten speichern wenn gewünscht
+                if (chkSave.Checked && !string.IsNullOrEmpty(Password))
+                {
+                    string alias = aliasTb.Text.Trim();
+                    if (string.IsNullOrEmpty(alias))
+                        alias = $"{Username}@{ComputerIP}";
+                    CredentialStore.Save(new CredentialEntry
+                    {
+                        Alias = alias,
+                        IP = ComputerIP,
+                        Username = Username,
+                        EncryptedPassword = CredentialStore.Encrypt(Password)
+                    });
                 }
             };
 
             Controls.AddRange(new Control[] {
-                new Label { Text = "Computer-IP:",  Location = new Point(20, 33),  AutoSize = true },
+                lblSaved, cmbSaved, btnDelete, sep,
+                new Label { Text = "Computer-IP:",  Location = new Point(20, 55),  AutoSize = true },
                 ipTb,
-                new Label { Text = "Benutzername:", Location = new Point(20, 73),  AutoSize = true },
+                new Label { Text = "Benutzername:", Location = new Point(20, 87),  AutoSize = true },
                 userTb,
-                new Label { Text = "Passwort:",     Location = new Point(20, 113), AutoSize = true },
+                new Label { Text = "Passwort:",     Location = new Point(20, 119), AutoSize = true },
                 passTb,
-                new Label { Text = "Hinweis: Für Remote-Zugriff wird ein Passwort benötigt.\nBei leerem Passwort wird nur WMI Registry verwendet.",
-                    Location = new Point(20, 150), Width = 450, Height = 50, ForeColor = Color.DarkBlue },
+                chkSave, lblAlias, aliasTb, hinweis,
                 okBtn, cancelBtn
             });
             AcceptButton = okBtn;
             CancelButton = cancelBtn;
         }
 
-        /// <summary>IP-Feld vorausfüllen — z.B. wenn aus dem Geräte-Panel aufgerufen.</summary>
         public void SetIP(string ip)
         {
-            var tb = Controls.Find("ipTextBox", false).FirstOrDefault() as TextBox;
-            if (tb != null) tb.Text = ip;
+            if (ipTb != null) ipTb.Text = ip;
+
+            // Passenden gespeicherten Eintrag automatisch vorwählen
+            for (int i = 1; i < cmbSaved.Items.Count; i++)
+            {
+                if (cmbSaved.Items[i] is CredentialEntry e && e.IP == ip)
+                {
+                    cmbSaved.SelectedIndex = i;
+                    return;
+                }
+            }
+        }
+    }
+
+    // =========================================================
+    // === CREDENTIAL STORE (Windows DPAPI) ===
+    // Speichert Zugangsdaten verschlüsselt mit Windows-Benutzerkonto.
+    // Nur auf dem gleichen PC + Benutzer entschlüsselbar.
+    // =========================================================
+    public class CredentialEntry
+    {
+        public string Alias { get; set; }
+        public string IP { get; set; }
+        public string Username { get; set; }
+        public string EncryptedPassword { get; set; }
+
+        public override string ToString() => $"{Alias}  ({Username}@{IP})";
+    }
+
+    public static class CredentialStore
+    {
+        private static readonly string FilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "NmapInventory", "credentials.dat");
+
+        public static string Encrypt(string plainText)
+        {
+            if (string.IsNullOrEmpty(plainText)) return "";
+            var bytes = Encoding.UTF8.GetBytes(plainText);
+            var encrypted = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(encrypted);
+        }
+
+        public static string Decrypt(string encryptedBase64)
+        {
+            if (string.IsNullOrEmpty(encryptedBase64)) return "";
+            try
+            {
+                var bytes = Convert.FromBase64String(encryptedBase64);
+                var decrypted = ProtectedData.Unprotect(bytes, null, DataProtectionScope.CurrentUser);
+                return Encoding.UTF8.GetString(decrypted);
+            }
+            catch { return ""; }
+        }
+
+        public static List<CredentialEntry> GetAll()
+        {
+            var list = new List<CredentialEntry>();
+            if (!File.Exists(FilePath)) return list;
+            try
+            {
+                foreach (var line in File.ReadAllLines(FilePath))
+                {
+                    var parts = line.Split('	');
+                    if (parts.Length == 4)
+                        list.Add(new CredentialEntry
+                        {
+                            Alias = parts[0],
+                            IP = parts[1],
+                            Username = parts[2],
+                            EncryptedPassword = parts[3]
+                        });
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        public static void Save(CredentialEntry entry)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
+            var all = GetAll();
+
+            // Bestehenden Eintrag mit gleichem Alias überschreiben
+            var existing = all.FirstOrDefault(e =>
+                e.Alias == entry.Alias || (e.IP == entry.IP && e.Username == entry.Username));
+            if (existing != null) all.Remove(existing);
+            all.Add(entry);
+
+            File.WriteAllLines(FilePath, all.Select(e =>
+                $"{e.Alias}	{e.IP}	{e.Username}	{e.EncryptedPassword}"));
+        }
+
+        public static void Delete(string alias)
+        {
+            if (!File.Exists(FilePath)) return;
+            var all = GetAll().Where(e => e.Alias != alias).ToList();
+            File.WriteAllLines(FilePath, all.Select(e =>
+                $"{e.Alias}	{e.IP}	{e.Username}	{e.EncryptedPassword}"));
         }
     }
 
@@ -355,6 +605,134 @@ namespace NmapInventory
             public string Hostname { get; set; }
             public override string ToString()
                 => string.IsNullOrEmpty(Hostname) ? IP : $"{IP,-18}  {Hostname}";
+        }
+    }
+
+    // =========================================================
+    // === DATENBANK-AUSWAHL-DIALOG ===
+    // =========================================================
+    public class DatabaseSelectionDialog : Form
+    {
+        private readonly DatabaseManager _db;
+        private CheckedListBox clb;
+        public List<string> SelectedDatabasePaths { get; private set; } = new List<string>();
+
+        public DatabaseSelectionDialog(DatabaseManager db)
+        {
+            _db = db;
+            Text = "Datenbanken auswählen";
+            Size = new Size(520, 420);
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            Font = new Font("Segoe UI", 10);
+
+            var header = new Label
+            {
+                Text = "Welche Datenbanken sollen in LibreOffice Calc geöffnet werden?",
+                Location = new Point(12, 12),
+                Size = new Size(480, 40),
+                Font = new Font("Segoe UI", 10, FontStyle.Bold)
+            };
+
+            clb = new CheckedListBox
+            {
+                Location = new Point(12, 58),
+                Size = new Size(480, 210),
+                CheckOnClick = true,
+                Font = new Font("Segoe UI", 10)
+            };
+
+            LoadDatabases();
+
+            var btnAlle = new Button { Text = "✔ Alle auswählen", Location = new Point(12, 276), Width = 155, Height = 28 };
+            btnAlle.Click += (s, e) => { for (int i = 0; i < clb.Items.Count; i++) clb.SetItemChecked(i, true); };
+
+            var btnKeine = new Button { Text = "✖ Keine", Location = new Point(175, 276), Width = 100, Height = 28 };
+            btnKeine.Click += (s, e) => { for (int i = 0; i < clb.Items.Count; i++) clb.SetItemChecked(i, false); };
+
+            var lblAnzahl = new Label
+            {
+                Location = new Point(12, 312),
+                Size = new Size(300, 20),
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray,
+                Text = $"0 von {clb.Items.Count} Datenbanken ausgewählt"
+            };
+            clb.ItemCheck += (s, e) =>
+            {
+                int cnt = clb.CheckedItems.Count + (e.NewValue == CheckState.Checked ? 1 : -1);
+                lblAnzahl.Text = $"{cnt} von {clb.Items.Count} Datenbanken ausgewählt";
+            };
+
+            var btnOk = new Button
+            {
+                Text = "In Calc öffnen",
+                Location = new Point(290, 340),
+                Width = 140,
+                Height = 30,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                DialogResult = DialogResult.OK
+            };
+            btnOk.Click += (s, e) =>
+            {
+                SelectedDatabasePaths = clb.CheckedItems.Cast<DbItem>()
+                    .Select(item => item.Path).ToList();
+                if (SelectedDatabasePaths.Count == 0)
+                {
+                    MessageBox.Show("Bitte mindestens eine Datenbank auswählen.",
+                        "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    DialogResult = DialogResult.None;
+                }
+            };
+
+            var btnAbbrechen = new Button
+            {
+                Text = "Abbrechen",
+                Location = new Point(440, 340),
+                Width = 68,
+                Height = 30,
+                DialogResult = DialogResult.Cancel
+            };
+
+            Controls.AddRange(new Control[] { header, clb, btnAlle, btnKeine, lblAnzahl, btnOk, btnAbbrechen });
+            AcceptButton = btnOk;
+            CancelButton = btnAbbrechen;
+        }
+
+        private void LoadDatabases()
+        {
+            clb.Items.Clear();
+            string mainPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "nmap_inventory.db");
+            if (System.IO.File.Exists(mainPath))
+                clb.Items.Add(new DbItem { Path = mainPath, Display = "Haupt-Datenbank  (nmap_inventory.db)" }, true);
+
+            try
+            {
+                var kunden = _db.GetCustomers();
+                var allFiles = _db.GetAllDatabaseFiles();
+                foreach (var file in allFiles.OrderBy(f => f))
+                {
+                    if (file == mainPath) continue;
+                    var custId = _db.TryGetCustomerIdFromPath(file);
+                    string name = custId.HasValue
+                        ? kunden.FirstOrDefault(k => k.ID == custId.Value)?.Name ?? $"Kunde {custId}"
+                        : System.IO.Path.GetFileName(file);
+                    long kb = new System.IO.FileInfo(file).Length / 1024;
+                    clb.Items.Add(new DbItem { Path = file, Display = $"{name,-28}  ({kb} KB)  —  {System.IO.Path.GetFileName(file)}" }, true);
+                }
+            }
+            catch { }
+
+            if (clb.Items.Count == 0)
+                clb.Items.Add(new DbItem { Path = "", Display = "Keine Datenbanken gefunden" }, false);
+        }
+
+        private class DbItem
+        {
+            public string Path { get; set; }
+            public string Display { get; set; }
+            public override string ToString() => Display;
         }
     }
 }

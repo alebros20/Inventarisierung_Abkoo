@@ -13,8 +13,10 @@ namespace NmapInventory
         // === UI COMPONENTS ===
         private TabControl tabControl;
         private TextBox networkTextBox;
-        private Button scanButton, detailScanButton, hardwareButton, exportButton, remoteHardwareButton;
+        private Button scanButton, remoteHardwareButton, exportButton;
         private Label statusLabel;
+        private ProgressBar scanProgressBar;
+        private System.Windows.Forms.Timer scanAnimTimer;
         private DataGridView deviceTable, softwareGridView, dbDeviceTable, dbSoftwareTable;
         private TextBox rawOutputTextBox, hardwareInfoTextBox;
         private ComboBox locationComboBox;
@@ -78,7 +80,29 @@ namespace NmapInventory
             tabControl = CreateTabControl();
             var topPanel = CreateTopPanel();
             statusLabel = CreateStatusLabel();
-            Controls.AddRange(new Control[] { tabControl, topPanel, statusLabel });
+
+            // Ladebalken — erscheint nur während Scan, sonst versteckt
+            scanProgressBar = new ProgressBar
+            {
+                Dock = DockStyle.Bottom,
+                Height = 6,
+                Style = ProgressBarStyle.Marquee,
+                MarqueeAnimationSpeed = 25,
+                Visible = false
+            };
+
+            // Sanduhr-Animation im Tab-Icon während Scan
+            scanAnimTimer = new System.Windows.Forms.Timer { Interval = 600 };
+            int sandFrame = 0;
+            string[] sandFrames = { "⏳", "⌛" };
+            scanAnimTimer.Tick += (s, e) =>
+            {
+                sandFrame = (sandFrame + 1) % sandFrames.Length;
+                statusLabel.Text = statusLabel.Text.TrimStart('⏳', '⌛', ' ');
+                statusLabel.Text = sandFrames[sandFrame] + "  " + statusLabel.Text;
+            };
+
+            Controls.AddRange(new Control[] { tabControl, topPanel, scanProgressBar, statusLabel });
         }
 
         // =========================================================
@@ -96,25 +120,23 @@ namespace NmapInventory
             locationComboBox = new ComboBox { Location = new Point(100, 43), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
             locationComboBox.SelectedIndexChanged += (s, e) => OnLocationSelected();
 
-            newLocationButton = new Button { Text = "+ Neuer Standort", Location = new Point(310, 43), Width = 140, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            newLocationButton = new Button { Location = new Point(310, 43), Width = 140, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            SetButtonIcon(newLocationButton, "+ Neuer Standort", 3);    // imageres: Ordner
             newLocationButton.Click += (s, e) => CreateNewLocation();
 
-            scanButton = new Button { Text = "🔍 Netzwerk scannen", Location = new Point(460, 8), Width = 150, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            scanButton = new Button { Location = new Point(460, 8), Width = 165, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            SetButtonIcon(scanButton, "Netzwerk scannen", 168);  // imageres: Lupe/Suche
             scanButton.Click += (s, e) => StartScan();
 
-            detailScanButton = new Button { Text = "🔬 Fernwartungs-Scan", Location = new Point(620, 8), Width = 155, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
-            detailScanButton.Click += (s, e) => StartDetailScan();
-
-            hardwareButton = new Button { Text = "Hardware/Software", Location = new Point(775, 8), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
-            hardwareButton.Click += (s, e) => StartHardwareQuery();
-
-            exportButton = new Button { Text = "Exportieren", Location = new Point(945, 8), Width = 110, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
-            exportButton.Click += (s, e) => ExportData();
-
-            remoteHardwareButton = new Button { Text = "Remote Hardware", Location = new Point(1065, 8), Width = 150, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            remoteHardwareButton = new Button { Location = new Point(634, 8), Width = 150, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            SetButtonIcon(remoteHardwareButton, "Remote Scan", 109);  // imageres: Computer/Monitor
             remoteHardwareButton.Click += (s, e) => StartRemoteHardwareQuery();
 
-            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, detailScanButton, hardwareButton, exportButton, remoteHardwareButton });
+            exportButton = new Button { Location = new Point(793, 8), Width = 130, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            SetButtonIcon(exportButton, "Exportieren", 162);  // imageres: Speichern/Export
+            exportButton.Click += (s, e) => ExportData();
+
+            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, remoteHardwareButton, exportButton });
             return topPanel;
         }
 
@@ -124,7 +146,70 @@ namespace NmapInventory
 
         private TabControl CreateTabControl()
         {
-            tabControl = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
+            tabControl = new TabControl
+            {
+                Dock = DockStyle.Fill,
+                Font = new Font("Segoe UI", 10),
+                DrawMode = TabDrawMode.OwnerDrawFixed,
+                ItemSize = new Size(48, 40),
+                SizeMode = TabSizeMode.Fixed
+            };
+
+            // ImageList mit Icons aus imageres.dll (Windows 7+, zuverlässige Indizes)
+            var tabImages = new ImageList { ImageSize = new Size(24, 24), ColorDepth = ColorDepth.Depth32Bit };
+            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 109)); // 0: Geräte        → Computer/Monitor
+            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 168)); // 1: Nmap Ausgabe  → Lupe/Suche
+            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 25)); // 2: Hardware      → Chip/CPU
+            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 2)); // 3: Software      → Anwendungsfenster
+            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 27)); // 4: DB Geräte     → Datenbank/Server
+            tabImages.Images.Add(ExtractDllIcon("shell32.dll", 20)); // 5: DB Software   → Diskette
+            tabImages.Images.Add(GetStandardUserIcon(24));              // 6: Kunden        → Standard-Benutzer-Icon
+            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 8)); // 7: Auswertung    → Diagramm/Tabelle
+            tabControl.ImageList = tabImages;
+
+            // Tooltip für Mouse-Over
+            var tabToolTip = new ToolTip { ShowAlways = true, InitialDelay = 300, AutoPopDelay = 5000 };
+            string[] tabNames = { "Geräte", "Nmap Ausgabe", "Hardware", "Software", "DB - Geräte", "DB - Software", "Kunden / Standorte", "Auswertung" };
+
+            tabControl.DrawItem += (s, e) =>
+            {
+                var tab = tabControl.TabPages[e.Index];
+                var rect = e.Bounds;
+                bool sel = (e.Index == tabControl.SelectedIndex);
+
+                // Hintergrund
+                e.Graphics.FillRectangle(sel
+                    ? SystemBrushes.Window
+                    : SystemBrushes.Control, rect);
+
+                // Icon zentriert
+                if (tabControl.ImageList != null && e.Index < tabNames.Length)
+                {
+                    var img = tabControl.ImageList.Images[e.Index];
+                    if (img != null)
+                    {
+                        int ix = rect.Left + (rect.Width - img.Width) / 2;
+                        int iy = rect.Top + (rect.Height - img.Height) / 2;
+                        e.Graphics.DrawImage(img, ix, iy);
+                    }
+                }
+            };
+
+            tabControl.MouseMove += (s, e) =>
+            {
+                for (int i = 0; i < tabControl.TabPages.Count; i++)
+                {
+                    if (tabControl.GetTabRect(i).Contains(e.Location))
+                    {
+                        string tip = i < tabNames.Length ? tabNames[i] : tabControl.TabPages[i].Text;
+                        if (tabToolTip.GetToolTip(tabControl) != tip)
+                            tabToolTip.SetToolTip(tabControl, tip);
+                        return;
+                    }
+                }
+                tabToolTip.SetToolTip(tabControl, "");
+            };
+
             tabControl.TabPages.Add(CreateDeviceTab());
             tabControl.TabPages.Add(CreateNmapTab());
             tabControl.TabPages.Add(CreateHardwareTab());
@@ -132,6 +217,12 @@ namespace NmapInventory
             tabControl.TabPages.Add(CreateDBDeviceTab());
             tabControl.TabPages.Add(CreateDBSoftwareTab());
             tabControl.TabPages.Add(CreateCustomerLocationTab());
+            tabControl.TabPages.Add(CreateAuswertungTab());
+
+            // ImageIndex pro Tab setzen
+            for (int i = 0; i < tabControl.TabPages.Count; i++)
+                tabControl.TabPages[i].ImageIndex = i;
+
             return tabControl;
         }
 
@@ -322,113 +413,290 @@ namespace NmapInventory
 
         private Panel CreateDetailsPanel()
         {
-            Panel panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+            var panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(0) };
 
-            // --- Kunde / Standort Details ---
-            var detailsLabel = new Label { Name = "detailsLabel", Text = "Details", Location = new Point(10, 10), Font = new Font("Segoe UI", 12, FontStyle.Bold), AutoSize = true };
-            var nameLabel = new Label { Text = "Name:", Location = new Point(10, 50), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var nameTextBox = new TextBox { Name = "nameTextBox", Location = new Point(100, 47), Width = 300, Font = new Font("Segoe UI", 10) };
-            var addressLabel = new Label { Text = "Adresse:", Location = new Point(10, 80), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var addressTextBox = new TextBox { Name = "addressTextBox", Location = new Point(100, 77), Width = 300, Multiline = true, Height = 60, Font = new Font("Segoe UI", 10) };
-            var saveBtn = new Button { Text = "Details speichern", Location = new Point(100, 145), Width = 150, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            // ── Abschnitt: Kunde / Standort ───────────────────
+            var secLabel = new Label
+            {
+                Name = "detailsLabel",
+                Text = "Details",
+                Location = new Point(12, 12),
+                Font = new Font("Segoe UI", 13, FontStyle.Bold),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(40, 80, 140)
+            };
+
+            // Trennlinie
+            var sep1 = new Panel
+            {
+                Location = new Point(12, 36),
+                Size = new Size(620, 1),
+                BackColor = Color.FromArgb(200, 210, 230)
+            };
+
+            // Name-Zeile
+            var nameLabel = new Label
+            {
+                Text = "Name:",
+                Location = new Point(12, 48),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 10),
+                ForeColor = Color.DarkSlateGray
+            };
+            var nameTextBox = new TextBox
+            {
+                Name = "nameTextBox",
+                Location = new Point(90, 45),
+                Width = 340,
+                Font = new Font("Segoe UI", 10)
+            };
+
+            // Adresse-Zeile
+            var addressLabel = new Label
+            {
+                Text = "Adresse:",
+                Location = new Point(12, 78),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 10),
+                ForeColor = Color.DarkSlateGray
+            };
+            var addressTextBox = new TextBox
+            {
+                Name = "addressTextBox",
+                Location = new Point(90, 75),
+                Width = 340,
+                Multiline = true,
+                Height = 52,
+                Font = new Font("Segoe UI", 10)
+            };
+
+            // Speichern-Button — Shell32 Icon Diskette
+            var saveBtn = new Button
+            {
+                Location = new Point(90, 134),
+                Width = 160,
+                Height = 28,
+                Font = new Font("Segoe UI", 10)
+            };
+            SetButtonIcon(saveBtn, "Speichern", 20, "shell32.dll");
             saveBtn.Click += (s, e) => SaveNodeDetails();
 
-            // --- IP Tabelle (für Location-Knoten) ---
-            var ipLabel = new Label { Text = "Zugeordnete IP-Adressen:", Location = new Point(10, 190), Font = new Font("Segoe UI", 10, FontStyle.Bold), AutoSize = true };
+            // ── Abschnitt: IP-Adressen ────────────────────────
+            var sep2 = new Panel
+            {
+                Location = new Point(12, 174),
+                Size = new Size(620, 1),
+                BackColor = Color.FromArgb(200, 210, 230)
+            };
+            var ipSecLabel = new Label
+            {
+                Text = "Zugeordnete IP-Adressen",
+                Location = new Point(12, 180),
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(40, 80, 140)
+            };
+
             var ipGrid = new DataGridView
             {
                 Name = "ipDataGridView",
-                Location = new Point(10, 215),
+                Location = new Point(12, 204),
                 Width = 620,
-                Height = 200,
+                Height = 190,
                 AllowUserToAddRows = false,
                 ReadOnly = true,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 MultiSelect = true,
-                Font = new Font("Segoe UI", 10),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                Font = new Font("Segoe UI", 9),
+                BackgroundColor = SystemColors.Window,
+                BorderStyle = BorderStyle.FixedSingle,
+                GridColor = Color.FromArgb(220, 225, 235),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                EnableHeadersVisualStyles = false
             };
-            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Arbeitsplatz", Width = 200 });
-            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP-Adresse", Width = 150 });
+            ipGrid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 240, 250);
+            ipGrid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Arbeitsplatz", Width = 220 });
+            ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP-Adresse", Width = 140 });
             ipGrid.CellDoubleClick += (s, e) => EditIPEntry(e.RowIndex);
 
-            // --- Manuelle IP Eingabe ---
-            var y = 425;
-            var wsLabel = new Label { Text = "Arbeitsplatz:", Location = new Point(10, y + 3), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var wsBox = new TextBox { Name = "workstationInputTextBox", Location = new Point(110, y), Width = 180, Font = new Font("Segoe UI", 10) };
-            var ipLbl2 = new Label { Text = "IP:", Location = new Point(300, y + 3), AutoSize = true, Font = new Font("Segoe UI", 10) };
-            var ipBox = new TextBox { Name = "ipInputTextBox", Location = new Point(320, y), Width = 140, Font = new Font("Segoe UI", 10) };
-            var addIpBtn = new Button { Text = "Manuell hinzufügen", Location = new Point(470, y - 1), Width = 155, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            // ── Eingabe-Zeile: neue IP ────────────────────────
+            int iy = 404;
+            var wsLabel = new Label
+            {
+                Text = "Arbeitsplatz:",
+                Location = new Point(12, iy + 4),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+            var wsBox = new TextBox
+            {
+                Name = "workstationInputTextBox",
+                Location = new Point(95, iy),
+                Width = 165,
+                Font = new Font("Segoe UI", 9)
+            };
+            var ipLbl2 = new Label
+            {
+                Text = "IP:",
+                Location = new Point(268, iy + 4),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+            var ipBox = new TextBox
+            {
+                Name = "ipInputTextBox",
+                Location = new Point(285, iy),
+                Width = 130,
+                Font = new Font("Segoe UI", 9)
+            };
+            var addIpBtn = new Button
+            {
+                Location = new Point(424, iy - 1),
+                Width = 140,
+                Height = 26,
+                Font = new Font("Segoe UI", 9)
+            };
+            SetButtonIcon(addIpBtn, "Hinzufügen", 319, "shell32.dll");
             addIpBtn.Click += (s, e) => AddIPToNode();
 
-            y += 35;
-            var removeBtn = new Button { Text = "IP(s) entfernen", Location = new Point(10, y), Width = 130, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            // ── Button-Leiste: Aktionen ───────────────────────
+            iy += 34;
+            var sep3 = new Panel
+            {
+                Location = new Point(12, iy - 4),
+                Size = new Size(620, 1),
+                BackColor = Color.FromArgb(220, 220, 220)
+            };
+
+            int bx = 12;
+            var removeBtn = new Button
+            {
+                Location = new Point(bx, iy),
+                Width = 130,
+                Height = 28,
+                Font = new Font("Segoe UI", 9)
+            };
+            SetButtonIcon(removeBtn, "Entfernen", 131, "shell32.dll");
             removeBtn.Click += (s, e) => RemoveIPFromNode();
-            var moveBtn = new Button { Text = "IP verschieben", Location = new Point(150, y), Width = 130, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+
+            bx += 138;
+            var moveBtn = new Button
+            {
+                Location = new Point(bx, iy),
+                Width = 130,
+                Height = 28,
+                Font = new Font("Segoe UI", 9)
+            };
+            SetButtonIcon(moveBtn, "Verschieben", 46, "shell32.dll");
             moveBtn.Click += (s, e) => MoveIPToAnotherLocation();
-            var importBtn = new Button { Text = "📥 Aus DB importieren", Location = new Point(290, y), Width = 160, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+
+            bx += 138;
+            var importBtn = new Button
+            {
+                Location = new Point(bx, iy),
+                Width = 155,
+                Height = 28,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            SetButtonIcon(importBtn, "Aus DB importieren", 165, "imageres.dll");
             importBtn.Click += (s, e) => ImportIPsFromDatabase();
 
-            // =========================================================
-            // === GERÄTE-DETAILS (sichtbar wenn IP-Knoten gewählt) ===
-            // =========================================================
+            // ── Geräte-Detail-Panel ───────────────────────────
+            int dpY = iy + 42;
+            var sep4 = new Panel
+            {
+                Location = new Point(0, dpY - 6),
+                Size = new Size(660, 2),
+                BackColor = Color.FromArgb(180, 200, 230)
+            };
+
             var devicePanel = new Panel
             {
                 Name = "deviceDetailPanel",
-                Location = new Point(0, 500),
-                Width = 650,
-                Height = 500,
+                Location = new Point(0, dpY),
+                Width = 660,
+                Height = 580,
                 Visible = false,
+                BackColor = Color.FromArgb(248, 250, 254),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
 
+            // Titel-Leiste im Device-Panel
+            var titleBar = new Panel
+            {
+                Location = new Point(0, 0),
+                Width = 660,
+                Height = 36,
+                BackColor = Color.FromArgb(40, 80, 140)
+            };
             var deviceTitleLabel = new Label
             {
                 Name = "deviceTitleLabel",
-                Text = "💻 Geräteinformationen",
-                Location = new Point(10, 5),
+                Text = "  Geräteinformationen",
+                Location = new Point(4, 0),
+                Size = new Size(450, 36),
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
-                AutoSize = true
+                ForeColor = Color.White,
+                TextAlign = ContentAlignment.MiddleLeft
             };
-
             var refreshDeviceBtn = new Button
             {
-                Text = "🔄 Aktualisieren",
-                Location = new Point(480, 2),
-                Width = 150,
-                Height = 24,
-                BackColor = SystemColors.Control,
-                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+                Text = "Aktualisieren",
+                Location = new Point(476, 5),
+                Width = 120,
+                Height = 26,
+                Font = new Font("Segoe UI", 9),
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(60, 110, 180)
             };
+            refreshDeviceBtn.FlatAppearance.BorderColor = Color.FromArgb(100, 150, 220);
             refreshDeviceBtn.Click += (s, e) =>
             {
                 if (!string.IsNullOrEmpty(currentDisplayedIP))
                     ShowDeviceDetails(currentDisplayedIP);
             };
+            titleBar.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn });
 
-            // --- Hostname bearbeiten ---
+            // Info-Leiste: IP / MAC / Typ
+            var deviceInfoLabel = new Label
+            {
+                Name = "deviceInfoLabel",
+                Text = "",
+                Location = new Point(10, 42),
+                Size = new Size(640, 18),
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+
+            // Hostname-Zeile
             var hostnameLabel = new Label
             {
                 Text = "Hostname:",
-                Location = new Point(10, 32),
+                Location = new Point(10, 66),
                 AutoSize = true,
-                Font = new Font("Segoe UI", 9)
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.FromArgb(40, 80, 140)
             };
             var hostnameBox = new TextBox
             {
                 Name = "deviceHostnameBox",
-                Location = new Point(78, 29),
-                Width = 300,
+                Location = new Point(86, 63),
+                Width = 280,
                 Font = new Font("Segoe UI", 9)
             };
+
             var saveHostnameBtn = new Button
             {
-                Text = "💾 Speichern",
-                Location = new Point(385, 28),
-                Width = 100,
-                Height = 24,
+                Location = new Point(374, 62),
+                Width = 110,
+                Height = 25,
                 Font = new Font("Segoe UI", 9)
             };
+            SetButtonIcon(saveHostnameBtn, "Speichern", 20, "shell32.dll");
             saveHostnameBtn.Click += (s, e) =>
             {
                 if (string.IsNullOrWhiteSpace(hostnameBox.Text) ||
@@ -440,42 +708,52 @@ namespace NmapInventory
             };
             var resetHostnameBtn = new Button
             {
-                Text = "↺ Auto",
-                Location = new Point(492, 28),
-                Width = 60,
-                Height = 24,
+                Location = new Point(492, 62),
+                Width = 80,
+                Height = 25,
                 Font = new Font("Segoe UI", 9)
             };
+            SetButtonIcon(resetHostnameBtn, "Auto", 238, "shell32.dll");
             resetHostnameBtn.Click += (s, e) =>
             {
                 if (string.IsNullOrEmpty(currentDisplayedIP)) return;
                 dbManager.ResetCustomHostname(currentDisplayedIP);
-                statusLabel.Text = $"Hostname wird beim nächsten Scan automatisch gesetzt";
+                statusLabel.Text = "Hostname wird beim nächsten Scan automatisch gesetzt";
             };
 
-            // Gerät Info-Zeile (IP / MAC / Hostname)
-            var deviceInfoLabel = new Label
+            // Hardware/Software-Scan-Button + Status
+            var scanHwSwBtn = new Button
             {
-                Name = "deviceInfoLabel",
+                Name = "scanHwSwBtn",
+                Location = new Point(10, 96),
+                Width = 200,
+                Height = 28,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            SetButtonIcon(scanHwSwBtn, "Hardware/SW abfragen", 109, "imageres.dll");
+            scanHwSwBtn.Click += (s, e) => StartHwSwScanForDevice();
+
+            var scanHwSwStatus = new Label
+            {
+                Name = "scanHwSwStatus",
                 Text = "",
-                Location = new Point(10, 57),
-                Size = new Size(630, 20),
+                Location = new Point(218, 100),
+                Size = new Size(420, 18),
                 Font = new Font("Segoe UI", 9),
                 ForeColor = Color.DarkSlateGray
             };
 
-            // --- Hardware Tab ---
+            // Tabs: Hardware + Software
             var deviceTabs = new TabControl
             {
                 Name = "deviceTabControl",
-                Location = new Point(10, 80),
-                Width = 630,
-                Height = 400,
+                Location = new Point(10, 130),
+                Width = 638,
+                Height = 435,
                 Font = new Font("Segoe UI", 10)
             };
 
-            // Hardware-Seite
-            var hwPage = new TabPage("🖥 Hardware");
+            var hwPage = new TabPage("  Hardware");
             var hwBox = new TextBox
             {
                 Name = "deviceHardwareBox",
@@ -484,12 +762,12 @@ namespace NmapInventory
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
                 Font = new Font("Consolas", 9),
-                BackColor = SystemColors.Control
+                BackColor = Color.FromArgb(250, 252, 255),
+                BorderStyle = BorderStyle.None
             };
             hwPage.Controls.Add(hwBox);
 
-            // Software-Seite
-            var swPage = new TabPage("📦 Software");
+            var swPage = new TabPage("  Software");
             var swGrid = new DataGridView
             {
                 Name = "deviceSoftwareGrid",
@@ -498,61 +776,246 @@ namespace NmapInventory
                 AllowUserToAddRows = false,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 Font = new Font("Segoe UI", 9),
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                BackgroundColor = SystemColors.Window,
+                BorderStyle = BorderStyle.None,
+                GridColor = Color.FromArgb(225, 230, 240),
+                EnableHeadersVisualStyles = false
             };
+            swGrid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 240, 250);
+            swGrid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+            swGrid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 255);
             swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Software", DataPropertyName = "Name", FillWeight = 40 });
-            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", DataPropertyName = "Version", FillWeight = 20 });
-            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", DataPropertyName = "Publisher", FillWeight = 25 });
+            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", DataPropertyName = "Version", FillWeight = 18 });
+            swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", DataPropertyName = "Publisher", FillWeight = 27 });
             swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Installiert", DataPropertyName = "InstallDate", FillWeight = 15 });
             swPage.Controls.Add(swGrid);
 
             deviceTabs.TabPages.Add(hwPage);
             deviceTabs.TabPages.Add(swPage);
 
-            // --- Hardware/Software für dieses Gerät abfragen ---
-            var scanHwSwBtn = new Button
-            {
-                Name = "scanHwSwBtn",
-                Text = "🖥 Hardware/Software abfragen",
-                Location = new Point(10, 505),
-                Width = 220,
-                Height = 26,
-                Font = new Font("Segoe UI", 9, FontStyle.Bold)
-            };
-            scanHwSwBtn.Click += (s, e) => StartHwSwScanForDevice();
-
-            var scanHwSwStatus = new Label
-            {
-                Name = "scanHwSwStatus",
-                Text = "",
-                Location = new Point(240, 509),
-                Size = new Size(380, 18),
-                Font = new Font("Segoe UI", 9),
-                ForeColor = Color.DarkSlateGray
-            };
-
             devicePanel.Controls.AddRange(new Control[] {
-                deviceTitleLabel, refreshDeviceBtn,
+                titleBar, deviceInfoLabel,
                 hostnameLabel, hostnameBox, saveHostnameBtn, resetHostnameBtn,
-                deviceInfoLabel, deviceTabs,
-                scanHwSwBtn, scanHwSwStatus
+                scanHwSwBtn, scanHwSwStatus,
+                deviceTabs
             });
 
-            // Panel-Höhe anpassen
-            devicePanel.Height = 540;
-
             panel.Controls.AddRange(new Control[] {
-                detailsLabel, nameLabel, nameTextBox, addressLabel, addressTextBox, saveBtn,
-                ipLabel, ipGrid,
+                secLabel, sep1,
+                nameLabel, nameTextBox, addressLabel, addressTextBox, saveBtn,
+                sep2, ipSecLabel, ipGrid,
                 wsLabel, wsBox, ipLbl2, ipBox, addIpBtn,
-                removeBtn, moveBtn, importBtn,
-                devicePanel
+                sep3, removeBtn, moveBtn, importBtn,
+                sep4, devicePanel
             });
             return panel;
         }
 
+
+        // Setzt Icon + Text auf einen Button (Icon links, Text rechts)
+        private static void SetButtonIcon(Button btn, string text, int iconIndex, string dll = "imageres.dll")
+        {
+            try
+            {
+                var bmp = ExtractDllIcon(dll, iconIndex);
+                var img = new ImageList { ImageSize = new Size(16, 16), ColorDepth = ColorDepth.Depth32Bit };
+                img.Images.Add(new Bitmap(bmp, 16, 16));
+                btn.ImageList = img;
+                btn.ImageIndex = 0;
+                btn.ImageAlign = ContentAlignment.MiddleLeft;
+                btn.TextAlign = ContentAlignment.MiddleRight;
+                btn.TextImageRelation = TextImageRelation.ImageBeforeText;
+            }
+            catch { }
+            btn.Text = text;
+        }
+
+        // Zeichnet ein einfaches Männchen-Icon als Bitmap
+        private static Bitmap DrawPersonIcon(int size)
+        {
+            var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.Clear(Color.Transparent);
+                var color = Color.FromArgb(70, 130, 180);
+                using (var brush = new SolidBrush(color))
+                using (var pen = new Pen(color, 1.5f))
+                {
+                    float s = size;
+                    // Kopf
+                    float headR = s * 0.18f;
+                    float headX = s * 0.5f - headR;
+                    float headY = s * 0.05f;
+                    g.FillEllipse(brush, headX, headY, headR * 2, headR * 2);
+                    // Körper
+                    float bodyTop = headY + headR * 2 + s * 0.02f;
+                    float bodyBottom = s * 0.72f;
+                    float bodyW = s * 0.28f;
+                    float bodyX = s * 0.5f - bodyW / 2;
+                    g.FillRectangle(brush, bodyX, bodyTop,
+                        bodyW, bodyBottom - bodyTop);
+                    // Arme
+                    pen.Width = size * 0.09f;
+                    pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                    float armY = bodyTop + (bodyBottom - bodyTop) * 0.25f;
+                    g.DrawLine(pen, bodyX, armY,
+                        s * 0.08f, armY + s * 0.18f);             // linker Arm
+                    g.DrawLine(pen, bodyX + bodyW, armY,
+                        s * 0.92f, armY + s * 0.18f);             // rechter Arm
+                    // Beine
+                    float legTop = bodyBottom;
+                    g.DrawLine(pen, s * 0.5f - bodyW * 0.2f, legTop,
+                        s * 0.28f, s * 0.97f);                    // linkes Bein
+                    g.DrawLine(pen, s * 0.5f + bodyW * 0.2f, legTop,
+                        s * 0.72f, s * 0.97f);                    // rechtes Bein
+                }
+            }
+            return bmp;
+        }
+
+        // Standard Windows-Benutzer-Icon — nutzt das offizielle Benutzerkonten-Bild
+        private static Bitmap GetStandardUserIcon(int size)
+        {
+            try
+            {
+                // Weg 1: Offizielles Benutzerbild aus Windows (user.bmp / user.png)
+                string userPic = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    @"Microsoft\User Account Pictures\user.bmp");
+                if (File.Exists(userPic))
+                {
+                    using (var orig = new Bitmap(userPic))
+                    {
+                        var bmp = new Bitmap(size, size);
+                        using (var g = Graphics.FromImage(bmp))
+                        {
+                            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                            g.DrawImage(orig, 0, 0, size, size);
+                        }
+                        return bmp;
+                    }
+                }
+
+                // Weg 2: Shell32 Icon 265 = Standard-Benutzer (seit XP unverändert)
+                return ExtractDllIcon("shell32.dll", 265);
+            }
+            catch
+            {
+                return ExtractDllIcon("shell32.dll", 265);
+            }
+        }
+
+        // Extrahiert ein Icon aus einer beliebigen DLL (shell32.dll, imageres.dll etc.)
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        private static extern IntPtr ExtractIcon(IntPtr hInst, string lpszExeFileName, int nIconIndex);
+
+        private static Bitmap ExtractDllIcon(string dllName, int index)
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.System), dllName);
+                IntPtr hIcon = ExtractIcon(IntPtr.Zero, path, index);
+                if (hIcon != IntPtr.Zero)
+                {
+                    using (var icon = System.Drawing.Icon.FromHandle(hIcon))
+                    {
+                        var bmp = new Bitmap(24, 24);
+                        using (var g = Graphics.FromImage(bmp))
+                        {
+                            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                            g.Clear(Color.Transparent);
+                            g.DrawIcon(icon, new Rectangle(0, 0, 24, 24));
+                        }
+                        return bmp;
+                    }
+                }
+            }
+            catch { }
+            return new Bitmap(24, 24);
+        }
+
+        // Kompatibilitäts-Alias
+        private static Bitmap ExtractShell32Icon(int index)
+            => ExtractDllIcon("shell32.dll", index);
+
         private Label CreateStatusLabel()
             => new Label { Dock = DockStyle.Bottom, Height = 30, Text = "Bereit", BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(5) };
+
+
+        // =========================================================
+        // === AUSWERTUNG / PIVOT TAB ===
+        // =========================================================
+
+        private TabPage CreateAuswertungTab()
+        {
+            var tab = new TabPage("Auswertung");
+            var infoLabel = new Label { Text = "Geräte, Software und Hardware aller Kunden durchsuchen.", Dock = DockStyle.Top, Height = 28, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), Font = new Font("Segoe UI", 9), ForeColor = Color.DarkSlateGray };
+            var btnOeffnen = new Button { Text = "In LibreOffice Calc öffnen", Dock = DockStyle.Top, Height = 38, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            btnOeffnen.Click += (s, e) =>
+            {
+                using (var dlg = new DatabaseSelectionDialog(dbManager))
+                {
+                    if (dlg.ShowDialog(this) == DialogResult.OK)
+                    {
+                        var form = new AuswertungForm(dbManager, dlg.SelectedDatabasePaths);
+                        form.ExportAndOpenCalc();
+                    }
+                }
+            };
+            var overviewLabel = new Label { Text = "", Dock = DockStyle.Top, Height = 22, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), Font = new Font("Segoe UI", 9), ForeColor = Color.DarkSlateGray };
+            var quickPanel = new Panel { Dock = DockStyle.Top, Height = 36 };
+            var lblQ = new Label { Text = "Schnellsuche Software:", Location = new Point(6, 9), AutoSize = true };
+            var txtQ = new TextBox { Location = new Point(155, 6), Width = 220 };
+            var btnQ = new Button { Text = "Suchen", Location = new Point(382, 5), Width = 80, Height = 24 };
+            quickPanel.Controls.AddRange(new Control[] { lblQ, txtQ, btnQ });
+            var quickGrid = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect, BackgroundColor = SystemColors.Window, BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", 9), EnableHeadersVisualStyles = false };
+            quickGrid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(245, 245, 245);
+            quickGrid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+            btnQ.Click += (s, e) => RunQuickSearch(txtQ.Text, quickGrid, overviewLabel);
+            txtQ.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) RunQuickSearch(txtQ.Text, quickGrid, overviewLabel); };
+            tab.Controls.Add(quickGrid); tab.Controls.Add(quickPanel); tab.Controls.Add(overviewLabel); tab.Controls.Add(btnOeffnen); tab.Controls.Add(infoLabel);
+            tab.Enter += (s, e) => LoadAuswertungOverview(overviewLabel);
+            return tab;
+        }
+
+        private void LoadAuswertungOverview(Label lbl)
+        {
+            try
+            {
+                var devices = dbManager.LoadDevices("Alle");
+                var software = dbManager.LoadSoftware("Alle");
+                var kunden = dbManager.GetCustomers();
+                lbl.Text = string.Format("Gesamt: {0} Geräte  ·  {1} Programme  ·  {2} Kunden", devices.Count, software.Select(s => s.Name).Distinct().Count(), kunden.Count);
+            }
+            catch { lbl.Text = ""; }
+        }
+
+        private void RunQuickSearch(string searchTerm, DataGridView grid, Label statusLbl)
+        {
+            if (string.IsNullOrWhiteSpace(searchTerm)) return;
+            try
+            {
+                var software = dbManager.LoadSoftware("Alle");
+                var devices = dbManager.LoadDevices("Alle");
+                var devByHost = devices.ToDictionary(d => d.Hostname ?? d.IP, d => d.IP, StringComparer.OrdinalIgnoreCase);
+                var matches = software.Where(s => (s.Name ?? "").IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0).OrderBy(s => s.PCName).ThenBy(s => s.Name).ToList();
+                var dt = new System.Data.DataTable();
+                dt.Columns.Add("Hostname"); dt.Columns.Add("IP"); dt.Columns.Add("Software"); dt.Columns.Add("Version"); dt.Columns.Add("Hersteller");
+                foreach (var sw in matches) { devByHost.TryGetValue(sw.PCName ?? "", out string swip); dt.Rows.Add(sw.PCName ?? "", swip ?? "", sw.Name ?? "", sw.Version ?? "", sw.Publisher ?? ""); }
+                grid.DataSource = dt;
+                statusLbl.Text = matches.Count + " Treffer";
+            }
+            catch (Exception ex) { statusLbl.Text = "Fehler: " + ex.Message; }
+        }
+
+        private void ShowFilterDialog()
+        {
+            new AuswertungForm(dbManager).Show(this);
+        }
 
         // =========================================================
         // === SCAN ===
@@ -567,8 +1030,8 @@ namespace NmapInventory
         {
             if (selectedLocationID <= 0) { MessageBox.Show("Bitte wähle einen Standort aus!", "Warnung", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             scanButton.Enabled = false;
-            detailScanButton.Enabled = false;
-            statusLabel.Text = "🔍 Netzwerk-Discovery läuft (ARP)...";
+            remoteHardwareButton.Enabled = false;
+            BeginScanUI("Netzwerk-Discovery läuft (ARP-Scan)...");
 
             System.Threading.Tasks.Task.Run(() =>
             {
@@ -591,9 +1054,9 @@ namespace NmapInventory
 
                         int found = currentDevices.Count;
                         int withMac = currentDevices.Count(d => !string.IsNullOrEmpty(d.MacAddress));
-                        statusLabel.Text = $"✅ Discovery abgeschlossen — {found} Geräte gefunden, {withMac} mit MAC-Adresse";
+                        EndScanUI($"✅ Discovery abgeschlossen — {found} Geräte, {withMac} mit MAC");
                         scanButton.Enabled = true;
-                        detailScanButton.Enabled = true;
+                        remoteHardwareButton.Enabled = true;
                     }));
                 }
                 catch (Exception ex)
@@ -601,97 +1064,36 @@ namespace NmapInventory
                     Invoke(new MethodInvoker(() =>
                     {
                         MessageBox.Show($"Fehler: {ex.Message}");
-                        statusLabel.Text = "Fehler beim Scan";
+                        EndScanUI("Fehler beim Scan");
                         scanButton.Enabled = true;
-                        detailScanButton.Enabled = true;
+                        remoteHardwareButton.Enabled = true;
                     }));
                 }
             });
         }
 
+        // Ladebalken + Sanduhr-Animation starten
+        private void BeginScanUI(string message)
+        {
+            scanProgressBar.Visible = true;
+            scanProgressBar.Value = 0;
+            scanAnimTimer.Start();
+            statusLabel.Text = "⏳  " + message;
+            Cursor = Cursors.AppStarting;
+        }
+
+        // Ladebalken + Sanduhr-Animation stoppen
+        private void EndScanUI(string message)
+        {
+            scanProgressBar.Visible = false;
+            scanAnimTimer.Stop();
+            statusLabel.Text = message;
+            Cursor = Cursors.Default;
+        }
+
         /// <summary>
         /// 🔬 FERNWARTUNGS-SCAN — scannt jedes Gerät einzeln mit Fortschrittsanzeige.
         /// Ports: RDP 3389, SSH 22, VNC 5900, WinRM 5985/5986, SMB 445, HTTP/S
-        /// </summary>
-        private void StartDetailScan()
-        {
-            var targets = currentDevices.Select(d => d.IP).ToList();
-
-            // Fallback: IPs aus DB wenn noch kein Discovery-Scan gemacht
-            if (targets.Count == 0)
-                targets = dbManager.GetAllIPsFromDevices().Select(d => d.IP).ToList();
-
-            if (targets.Count == 0)
-            {
-                MessageBox.Show("Keine Geräte gefunden.\nBitte zuerst einen Netzwerk-Scan durchführen!",
-                    "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            scanButton.Enabled = false;
-            detailScanButton.Enabled = false;
-            statusLabel.Text = $"🔬 Fernwartungs-Scan startet für {targets.Count} Geräte...";
-
-            System.Threading.Tasks.Task.Run(() =>
-            {
-                int total = targets.Count;
-                int done = 0;
-                int withRDP = 0, withSSH = 0, withVNC = 0;
-                var rawAll = new System.Text.StringBuilder();
-
-                foreach (var ip in targets)
-                {
-                    Invoke(new MethodInvoker(() =>
-                        statusLabel.Text =
-                            $"🔬 {done}/{total}  RDP:{withRDP}  SSH:{withSSH}  VNC:{withVNC}  — scanne {ip} ..."));
-
-                    try
-                    {
-                        var result = nmapScanner.DetailScanSingle(ip);
-                        rawAll.AppendLine(result.RawOutput);
-
-                        foreach (var device in result.Devices)
-                        {
-                            dbManager.SaveNmapDetails(device);
-
-                            if (device.OpenPorts.Any(p => p.Port == 3389)) withRDP++;
-                            if (device.OpenPorts.Any(p => p.Port == 22)) withSSH++;
-                            if (device.OpenPorts.Any(p => p.Port == 5900)) withVNC++;
-
-                            var existing = currentDevices.FirstOrDefault(d => d.IP == device.IP);
-                            if (existing != null)
-                            {
-                                existing.OS = device.OS;
-                                existing.OSDetails = device.OSDetails;
-                                existing.OpenPorts = device.OpenPorts;
-                                existing.Ports = device.Ports;
-                            }
-                        }
-                    }
-                    catch { /* Einzelgerät fehlgeschlagen → weitermachen */ }
-
-                    done++;
-                }
-
-                Invoke(new MethodInvoker(() =>
-                {
-                    rawOutputTextBox.Text = rawAll.ToString();
-                    dbManager.SaveDevices(currentDevices);
-                    LoadDatabaseDevices();
-                    DisplayDevicesWithStatus(currentDevices, lastScanDevices);
-
-                    if (!string.IsNullOrEmpty(currentDisplayedIP))
-                        ShowDeviceDetails(currentDisplayedIP);
-
-                    statusLabel.Text =
-                        $"✅ Fernwartungs-Scan abgeschlossen — {total} Geräte  |  " +
-                        $"RDP 🖥: {withRDP}  SSH: {withSSH}  VNC: {withVNC}";
-
-                    scanButton.Enabled = true;
-                    detailScanButton.Enabled = true;
-                }));
-            });
-        }
 
         private void SyncDevicesToLocation(int locationID, List<DeviceInfo> devices)
         {
@@ -725,12 +1127,16 @@ namespace NmapInventory
                 {
                     // IP trotzdem zur Location hinzufügen falls das Gerät umgezogen ist (neue IP)
                     dbManager.AddIPToLocation(locationID, device.IP, device.Hostname ?? "");
+                    // Auch in der Kunden-spezifischen DB speichern
+                    try { dbManager.SyncDeviceToCustomerDb(device, location.CustomerID); } catch { }
                     added++;
                     skippedMAC++;
                     continue;
                 }
 
                 dbManager.AddIPToLocation(locationID, device.IP, device.Hostname ?? "");
+                // Zusätzlich in der Kunden-spezifischen DB speichern
+                try { dbManager.SyncDeviceToCustomerDb(device, location.CustomerID); } catch { }
                 added++;
             }
 
@@ -759,29 +1165,6 @@ namespace NmapInventory
         // === HARDWARE / SOFTWARE ===
         // =========================================================
 
-        private void StartHardwareQuery()
-        {
-            hardwareButton.Enabled = false;
-            statusLabel.Text = "Daten werden gesammelt...";
-            System.Threading.Tasks.Task.Run(() =>
-            {
-                string hw = hardwareManager.GetHardwareInfo();
-                var sw = softwareManager.GetInstalledSoftware();
-                string pcName = Environment.MachineName;
-                foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
-                dbManager.CheckForUpdates(sw, pcName);
-                Invoke(new MethodInvoker(() =>
-                {
-                    hardwareInfoTextBox.Text = hw;
-                    currentSoftware = sw;
-                    DisplaySoftwareGrid(sw);
-                    dbManager.SaveSoftware(sw);
-                    UpdateHardwareLabels(pcName, false);
-                    statusLabel.Text = "Fertig";
-                    hardwareButton.Enabled = true;
-                }));
-            });
-        }
 
         private void StartRemoteHardwareQuery()
         {
@@ -790,7 +1173,7 @@ namespace NmapInventory
                 if (form.ShowDialog(this) == DialogResult.OK)
                 {
                     remoteHardwareButton.Enabled = false;
-                    statusLabel.Text = $"Verbinde zu {form.ComputerIP}...";
+                    BeginScanUI($"Verbinde zu {form.ComputerIP}...");
                     System.Threading.Tasks.Task.Run(() =>
                     {
                         try
@@ -806,13 +1189,13 @@ namespace NmapInventory
                                 DisplaySoftwareGrid(sw, pcName);
                                 dbManager.SaveSoftware(sw);
                                 UpdateHardwareLabels(pcName, true);
-                                statusLabel.Text = "Remote Abfrage abgeschlossen";
+                                EndScanUI("Remote Abfrage abgeschlossen");
                                 remoteHardwareButton.Enabled = true;
                             }));
                         }
                         catch (Exception ex)
                         {
-                            Invoke(new MethodInvoker(() => { MessageBox.Show($"Fehler: {ex.Message}"); statusLabel.Text = "Fehler bei Remote Abfrage"; remoteHardwareButton.Enabled = true; }));
+                            Invoke(new MethodInvoker(() => { MessageBox.Show($"Fehler: {ex.Message}"); EndScanUI("Fehler bei Remote Abfrage"); remoteHardwareButton.Enabled = true; }));
                         }
                     });
                 }
@@ -1071,13 +1454,55 @@ namespace NmapInventory
 
             foreach (var ip in dbManager.GetIPsWithWorkstationByLocation(location.ID))
             {
-                // Hostname aus Devices bevorzugen (kann manuell gesetzt sein)
+                // Bevorzuge den in der Location eingetragenen Arbeitsplatznamen (selbst vergeben),
+                // falls vorhanden. Sonst Hostname aus Devices-Tabelle verwenden.
                 var device = allDevices?.FirstOrDefault(d => d.IP == ip.IPAddress);
-                string label = device?.Hostname ?? ip.WorkstationName ?? "";
+                string label = ip.WorkstationName ?? device?.Hostname ?? "";
 
-                string display = string.IsNullOrEmpty(label)
-                    ? $"📍 {ip.IPAddress}"
-                    : $"💻 {label} ({ip.IPAddress})";
+                // Gerätetyp ermitteln (aus letzter Nmap-Detail / Ports)
+                var nmapDetail = dbManager.GetLatestNmapDetail(ip.IPAddress);
+                var ports = dbManager.GetPortsByDevice(ip.IPAddress) ?? new List<NmapPort>();
+                var probe = new DeviceInfo
+                {
+                    IP = ip.IPAddress,
+                    Hostname = label,
+                    Vendor = nmapDetail?.Vendor,
+                    OS = nmapDetail?.OS ?? nmapDetail?.OSDetails,
+                    OpenPorts = ports
+                };
+                var detectedType = DeviceTypeHelper.Detect(probe);
+                string typeIcon = DeviceTypeHelper.GetIcon(detectedType);
+                string typeLabel = DeviceTypeHelper.GetLabel(detectedType);
+
+                // MAC aus Device oder NmapDetail
+                string mac = device?.MacAddress ?? nmapDetail?.MacAddress ?? "";
+
+                // Hersteller: zuerst Nmap-Vendor, falls leer per OUI-Lookup versuchen
+                string vendorDisplay = nmapDetail?.Vendor;
+                if (!string.IsNullOrEmpty(vendorDisplay)) vendorDisplay = vendorDisplay.Trim();
+                else
+                {
+                    var oui = OUIHelper.Lookup(mac);
+                    if (!string.IsNullOrEmpty(oui)) vendorDisplay = oui;
+                }
+
+                // Format: Gerätename - (Gerätetyp) - MAC Adresse - Hersteller
+                string namePart = label;
+                // Wenn kein Gerätename vorhanden, als Fallback MAC oder Vendor oder IP verwenden
+                if (string.IsNullOrEmpty(namePart))
+                    namePart = !string.IsNullOrEmpty(mac) ? mac : (!string.IsNullOrEmpty(vendorDisplay) ? vendorDisplay : "");
+
+                string typePart = !string.IsNullOrEmpty(typeLabel) ? $"({typeLabel})" : null;
+                string macPart = !string.IsNullOrEmpty(mac) ? mac : null;
+                string vendorPart = !string.IsNullOrEmpty(vendorDisplay) ? vendorDisplay : null;
+
+                var parts = new List<string>();
+                if (!string.IsNullOrEmpty(namePart)) parts.Add(namePart);
+                if (!string.IsNullOrEmpty(typePart)) parts.Add(typePart);
+                if (!string.IsNullOrEmpty(macPart)) parts.Add(macPart);
+                if (!string.IsNullOrEmpty(vendorPart)) parts.Add(vendorPart);
+
+                string display = parts.Count > 0 ? string.Join(" - ", parts) : ip.IPAddress;
 
                 locationNode.Nodes.Add(new TreeNode(display)
                 {
@@ -1240,8 +1665,8 @@ namespace NmapInventory
             {
                 hw.AppendLine();
                 hw.AppendLine("=== Ports (aus letztem Scan) ===");
-                foreach (var p in device.Ports.Split(','))
-                    hw.AppendLine($"  {p.Trim()}");
+                foreach (var portStr in device.Ports.Split(','))
+                    hw.AppendLine($"  {portStr.Trim()}");
             }
             else
             {
@@ -1733,7 +2158,39 @@ namespace NmapInventory
     {
         public int ID { get; set; }
         public string Display { get; set; }
+        public string FilePath { get; set; }
         public override string ToString() => Display;
+    }
+
+    // OUI helper: simple vendor lookup from MAC OUI (first 3 bytes)
+    public static class OUIHelper
+    {
+        private static readonly Dictionary<string, string> builtIn = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "00:1A:2B", "Apple, Inc." },
+            { "00:1A:79", "Samsung Electronics" },
+            { "00:0C:29", "VMware, Inc." },
+            { "84:38:35", "Google, Inc." },
+            { "3C:5A:B4", "Xiaomi Communications" }
+        };
+
+        public static string Lookup(string mac)
+        {
+            if (string.IsNullOrWhiteSpace(mac)) return null;
+            try
+            {
+                var clean = mac.Trim().ToUpperInvariant().Replace('-', ':').Replace('.', ':');
+                clean = new string(clean.Where(c => c == ':' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')).ToArray());
+                if (!clean.Contains(":") && clean.Length >= 12)
+                    clean = string.Join(":", Enumerable.Range(0, 6).Select(i => clean.Substring(i * 2, 2)));
+                var parts = clean.Split(new[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3) return null;
+                var key = string.Join(":", parts.Take(3));
+                if (builtIn.TryGetValue(key, out var vendor)) return vendor;
+                return null;
+            }
+            catch { return null; }
+        }
     }
 
     // =========================================================
