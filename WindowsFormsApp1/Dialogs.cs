@@ -127,8 +127,11 @@ namespace NmapInventory
                 Name = "aliasTb",
                 Location = new Point(200, 175),
                 Width = 220,
-                PlaceholderText = "z.B. Büro-PC"
+                Text = "z.B. Büro-PC",
+                ForeColor = Color.Gray
             };
+            aliasTb.GotFocus += (s, e) => { if (aliasTb.ForeColor == Color.Gray) { aliasTb.Text = ""; aliasTb.ForeColor = SystemColors.WindowText; } };
+            aliasTb.LostFocus += (s, e) => { if (string.IsNullOrEmpty(aliasTb.Text)) { aliasTb.Text = "z.B. Büro-PC"; aliasTb.ForeColor = Color.Gray; } };
             chkSave.CheckedChanged += (s, e) => { lblAlias.Visible = chkSave.Checked; aliasTb.Visible = chkSave.Checked; };
 
             var hinweis = new Label
@@ -278,7 +281,7 @@ namespace NmapInventory
         {
             if (string.IsNullOrEmpty(plainText)) return "";
             var bytes = Encoding.UTF8.GetBytes(plainText);
-            var encrypted = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+            var encrypted = System.Security.Cryptography.ProtectedData.Protect(bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
             return Convert.ToBase64String(encrypted);
         }
 
@@ -288,7 +291,7 @@ namespace NmapInventory
             try
             {
                 var bytes = Convert.FromBase64String(encryptedBase64);
-                var decrypted = ProtectedData.Unprotect(bytes, null, DataProtectionScope.CurrentUser);
+                var decrypted = System.Security.Cryptography.ProtectedData.Unprotect(bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
                 return Encoding.UTF8.GetString(decrypted);
             }
             catch { return ""; }
