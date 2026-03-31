@@ -36,6 +36,71 @@ namespace NmapInventory
         private int selectedLocationID = -1;
         private string currentDisplayedIP = "";  // aktuell im Detail-Panel angezeigte IP
 
+        //################# Docking-Mechanismus für Geräte-Details Panel #################
+
+        private Control originalDevicePanelParent = null;
+        private Form floatingDeviceForm = null;
+        private Panel deviceDetailPanelRef = null;
+
+        private void UndockDevicePanel()
+        {
+            if (floatingDeviceForm != null) return;
+
+            var panel = Controls.Find("deviceDetailPanel", true).FirstOrDefault() as Panel;
+            if (panel == null) return;
+
+            deviceDetailPanelRef = panel;
+            originalDevicePanelParent = panel.Parent;
+
+            // Button ausblenden
+            var dockBtn = panel.Controls.Find("dockButton", true).FirstOrDefault() as Button;
+            if (dockBtn != null) dockBtn.Visible = false;
+
+            originalDevicePanelParent.Controls.Remove(panel);
+
+            floatingDeviceForm = new Form
+            {
+                Text = "Geräte-Details",
+                Size = new Size(panel.Width + 20, panel.Height + 40),
+                StartPosition = FormStartPosition.CenterParent
+            };
+
+            panel.Dock = DockStyle.Fill;
+            floatingDeviceForm.Controls.Add(panel);
+
+            floatingDeviceForm.FormClosing += (s, e) =>
+            {
+                e.Cancel = false;
+                DockDevicePanel();
+            };
+
+            floatingDeviceForm.Show();
+        }
+
+
+        private void DockDevicePanel()
+        {
+            if (floatingDeviceForm == null || deviceDetailPanelRef == null || originalDevicePanelParent == null)
+                return;
+
+            floatingDeviceForm.Controls.Remove(deviceDetailPanelRef);
+            originalDevicePanelParent.Controls.Add(deviceDetailPanelRef);
+
+            // Button wieder einblenden
+            var dockBtn = deviceDetailPanelRef.Controls.Find("dockButton", true).FirstOrDefault() as Button;
+            if (dockBtn != null) dockBtn.Visible = true;
+
+            deviceDetailPanelRef.Dock = DockStyle.None;
+            deviceDetailPanelRef.Location = new Point(0, 500);
+
+            floatingDeviceForm.Close();
+
+            floatingDeviceForm = null;
+            deviceDetailPanelRef = null;
+            originalDevicePanelParent = null;
+        }
+
+        //################# Docking-Mechanismus für Geräte-Details Panel #################
         public MainForm()
         {
             nmapScanner = new NmapScanner();
@@ -275,7 +340,7 @@ namespace NmapInventory
             Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = SystemColors.Control, Padding = new Padding(10) };
             panel.Controls.AddRange(new Control[] {
                 new Label { Name = "hardwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue },
-                new Label { Name = "hardwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray }
+                new Label { Name = "hardwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = SystemColors.ControlText }
             });
             hardwareInfoTextBox = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, Font = new Font("Consolas", 10), ReadOnly = true };
             var container = new Panel { Dock = DockStyle.Fill };
@@ -289,7 +354,7 @@ namespace NmapInventory
             Panel panel = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = SystemColors.Control, Padding = new Padding(10) };
             panel.Controls.AddRange(new Control[] {
                 new Label { Name = "softwarePCLabel", Text = "Lokaler PC: " + Environment.MachineName, Location = new Point(10, 8), AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.DarkBlue },
-                new Label { Name = "softwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.DarkSlateGray }
+                new Label { Name = "softwareUpdateLabel", Text = "Letzte Aktualisierung: -", Location = new Point(400, 8), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = SystemColors.ControlText }
             });
             softwareGridView = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10) };
             softwareGridView.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Software", Width = 250, ReadOnly = true });
@@ -423,7 +488,7 @@ namespace NmapInventory
                 Location = new Point(12, 12),
                 Font = new Font("Segoe UI", 13, FontStyle.Bold),
                 AutoSize = true,
-                ForeColor = Color.FromArgb(40, 80, 140)
+                ForeColor = SystemColors.ControlText
             };
 
             // Trennlinie
@@ -431,7 +496,7 @@ namespace NmapInventory
             {
                 Location = new Point(12, 36),
                 Size = new Size(620, 1),
-                BackColor = Color.FromArgb(200, 210, 230)
+                BackColor = SystemColors.ControlDark
             };
 
             // Name-Zeile
@@ -441,7 +506,7 @@ namespace NmapInventory
                 Location = new Point(12, 48),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 10),
-                ForeColor = Color.DarkSlateGray
+                ForeColor = SystemColors.ControlText
             };
             var nameTextBox = new TextBox
             {
@@ -458,7 +523,7 @@ namespace NmapInventory
                 Location = new Point(12, 78),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 10),
-                ForeColor = Color.DarkSlateGray
+                ForeColor = SystemColors.ControlText
             };
             var addressTextBox = new TextBox
             {
@@ -486,7 +551,7 @@ namespace NmapInventory
             {
                 Location = new Point(12, 174),
                 Size = new Size(620, 1),
-                BackColor = Color.FromArgb(200, 210, 230)
+                BackColor = SystemColors.ControlDark
             };
             var ipSecLabel = new Label
             {
@@ -494,7 +559,7 @@ namespace NmapInventory
                 Location = new Point(12, 180),
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 AutoSize = true,
-                ForeColor = Color.FromArgb(40, 80, 140)
+                ForeColor = SystemColors.ControlText
             };
 
             var ipGrid = new DataGridView
@@ -510,11 +575,11 @@ namespace NmapInventory
                 Font = new Font("Segoe UI", 9),
                 BackgroundColor = SystemColors.Window,
                 BorderStyle = BorderStyle.FixedSingle,
-                GridColor = Color.FromArgb(220, 225, 235),
+                GridColor = SystemColors.ControlLight,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 EnableHeadersVisualStyles = false
             };
-            ipGrid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 240, 250);
+            ipGrid.ColumnHeadersDefaultCellStyle.BackColor = SystemColors.Control;
             ipGrid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
             ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Arbeitsplatz", Width = 220 });
             ipGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP-Adresse", Width = 140 });
@@ -528,7 +593,7 @@ namespace NmapInventory
                 Location = new Point(12, iy + 4),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9),
-                ForeColor = Color.DarkSlateGray
+                ForeColor = SystemColors.ControlText
             };
             var wsBox = new TextBox
             {
@@ -543,7 +608,7 @@ namespace NmapInventory
                 Location = new Point(268, iy + 4),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9),
-                ForeColor = Color.DarkSlateGray
+                ForeColor = SystemColors.ControlText
             };
             var ipBox = new TextBox
             {
@@ -568,7 +633,7 @@ namespace NmapInventory
             {
                 Location = new Point(12, iy - 4),
                 Size = new Size(620, 1),
-                BackColor = Color.FromArgb(220, 220, 220)
+                BackColor = SystemColors.ControlDark
             };
 
             int bx = 12;
@@ -610,7 +675,7 @@ namespace NmapInventory
             {
                 Location = new Point(0, dpY - 6),
                 Size = new Size(660, 2),
-                BackColor = Color.FromArgb(180, 200, 230)
+                BackColor = SystemColors.ControlDark
             };
 
             var devicePanel = new Panel
@@ -620,7 +685,7 @@ namespace NmapInventory
                 Width = 660,
                 Height = 580,
                 Visible = false,
-                BackColor = Color.FromArgb(248, 250, 254),
+                BackColor = SystemColors.Control,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
 
@@ -630,7 +695,7 @@ namespace NmapInventory
                 Location = new Point(0, 0),
                 Width = 660,
                 Height = 36,
-                BackColor = Color.FromArgb(40, 80, 140)
+                BackColor = SystemColors.Control
             };
             var deviceTitleLabel = new Label
             {
@@ -639,7 +704,7 @@ namespace NmapInventory
                 Location = new Point(4, 0),
                 Size = new Size(450, 36),
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
-                ForeColor = Color.White,
+                ForeColor = SystemColors.ControlText,
                 TextAlign = ContentAlignment.MiddleLeft
             };
             var refreshDeviceBtn = new Button
@@ -649,18 +714,36 @@ namespace NmapInventory
                 Width = 120,
                 Height = 26,
                 Font = new Font("Segoe UI", 9),
-                FlatStyle = FlatStyle.Flat,
-                ForeColor = Color.White,
-                BackColor = Color.FromArgb(60, 110, 180)
+                ForeColor = SystemColors.ControlText,
+                BackColor = SystemColors.Control
             };
-            refreshDeviceBtn.FlatAppearance.BorderColor = Color.FromArgb(100, 150, 220);
+
             refreshDeviceBtn.Click += (s, e) =>
             {
                 if (!string.IsNullOrEmpty(currentDisplayedIP))
                     ShowDeviceDetails(currentDisplayedIP);
             };
-            titleBar.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn });
+           // titleBar.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn });
 
+            //######### dock/undock Button #########
+
+            var dockDeviceBtn = new Button
+            {
+                Text = "[]",
+                Location = new Point(400, 5),
+                Width = 26,
+                Height = 26,
+                Font = new Font("Segoe UI", 9),
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(60, 110, 180)
+            };
+            dockDeviceBtn.FlatAppearance.BorderColor = Color.FromArgb(100, 150, 220);
+            dockDeviceBtn.Click += (s, e) => UndockDevicePanel();
+
+            titleBar.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn, dockDeviceBtn });
+
+            //######## dock/undock Button #########
             // Info-Leiste: IP / MAC / Typ
             var deviceInfoLabel = new Label
             {
@@ -669,7 +752,7 @@ namespace NmapInventory
                 Location = new Point(10, 42),
                 Size = new Size(640, 18),
                 Font = new Font("Segoe UI", 9),
-                ForeColor = Color.DarkSlateGray
+                ForeColor = SystemColors.ControlText
             };
 
             // Hostname-Zeile
@@ -679,7 +762,7 @@ namespace NmapInventory
                 Location = new Point(10, 66),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                ForeColor = Color.FromArgb(40, 80, 140)
+                ForeColor = SystemColors.ControlText
             };
             var hostnameBox = new TextBox
             {
@@ -740,7 +823,7 @@ namespace NmapInventory
                 Location = new Point(218, 100),
                 Size = new Size(420, 18),
                 Font = new Font("Segoe UI", 9),
-                ForeColor = Color.DarkSlateGray
+                ForeColor = SystemColors.ControlText
             };
 
             // Tabs: Hardware + Software
@@ -762,7 +845,7 @@ namespace NmapInventory
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
                 Font = new Font("Consolas", 9),
-                BackColor = Color.FromArgb(250, 252, 255),
+                BackColor = SystemColors.Window,
                 BorderStyle = BorderStyle.None
             };
             hwPage.Controls.Add(hwBox);
@@ -782,9 +865,9 @@ namespace NmapInventory
                 GridColor = Color.FromArgb(225, 230, 240),
                 EnableHeadersVisualStyles = false
             };
-            swGrid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 240, 250);
+            swGrid.ColumnHeadersDefaultCellStyle.BackColor = SystemColors.Control;
             swGrid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
-            swGrid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 255);
+            swGrid.AlternatingRowsDefaultCellStyle.BackColor = SystemColors.Window;
             swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Software", DataPropertyName = "Name", FillWeight = 40 });
             swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Version", DataPropertyName = "Version", FillWeight = 18 });
             swGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller", DataPropertyName = "Publisher", FillWeight = 27 });
@@ -953,7 +1036,7 @@ namespace NmapInventory
         private TabPage CreateAuswertungTab()
         {
             var tab = new TabPage("Auswertung");
-            var infoLabel = new Label { Text = "Geräte, Software und Hardware aller Kunden durchsuchen.", Dock = DockStyle.Top, Height = 28, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), Font = new Font("Segoe UI", 9), ForeColor = Color.DarkSlateGray };
+            var infoLabel = new Label { Text = "Geräte, Software und Hardware aller Kunden durchsuchen.", Dock = DockStyle.Top, Height = 28, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), Font = new Font("Segoe UI", 9), ForeColor = SystemColors.ControlText };
             var btnOeffnen = new Button { Text = "In LibreOffice Calc öffnen", Dock = DockStyle.Top, Height = 38, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             btnOeffnen.Click += (s, e) =>
             {
@@ -966,7 +1049,7 @@ namespace NmapInventory
                     }
                 }
             };
-            var overviewLabel = new Label { Text = "", Dock = DockStyle.Top, Height = 22, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), Font = new Font("Segoe UI", 9), ForeColor = Color.DarkSlateGray };
+            var overviewLabel = new Label { Text = "", Dock = DockStyle.Top, Height = 22, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), Font = new Font("Segoe UI", 9), ForeColor = SystemColors.ControlText };
             var quickPanel = new Panel { Dock = DockStyle.Top, Height = 36 };
             var lblQ = new Label { Text = "Schnellsuche Software:", Location = new Point(6, 9), AutoSize = true };
             var txtQ = new TextBox { Location = new Point(155, 6), Width = 220 };
@@ -1168,37 +1251,78 @@ namespace NmapInventory
 
         private void StartRemoteHardwareQuery()
         {
-            using (var form = new RemoteConnectionForm())
+            using (var form = new RemoteConnectionForm(dbManager))
             {
-                if (form.ShowDialog(this) == DialogResult.OK)
+                if (form.ShowDialog(this) != DialogResult.OK) return;
+
+                // Einzelgerät oder Mehrfachauswahl aus Picker?
+                var targets = new List<(string IP, string Username, string Password)>();
+
+                if (form.SelectedTargets.Count > 0)
+                    targets.AddRange(form.SelectedTargets);
+                else if (!string.IsNullOrEmpty(form.ComputerIP))
+                    targets.Add((form.ComputerIP, form.Username, form.Password));
+
+                if (targets.Count == 0) return;
+
+                remoteHardwareButton.Enabled = false;
+                int total = targets.Count;
+                int current = 0;
+
+                BeginScanUI(total == 1
+                    ? $"Verbinde zu {targets[0].IP}..."
+                    : $"Starte Remote-Scan für {total} Geräte...");
+
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    remoteHardwareButton.Enabled = false;
-                    BeginScanUI($"Verbinde zu {form.ComputerIP}...");
-                    System.Threading.Tasks.Task.Run(() =>
+                    var errors = new List<string>();
+                    int success = 0;
+
+                    foreach (var target in targets)
                     {
+                        current++;
+                        Invoke(new MethodInvoker(() =>
+                            statusLabel.Text = $"⏳  Gerät {current}/{total}: {target.IP}..."));
+
                         try
                         {
-                            string hw = hardwareManager.GetRemoteHardwareInfo(form.ComputerIP, form.Username, form.Password);
-                            var sw = softwareManager.GetRemoteSoftware(form.ComputerIP, form.Username, form.Password);
-                            string pcName = form.ComputerIP;
+                            string hw = hardwareManager.GetRemoteHardwareInfo(target.IP, target.Username, target.Password);
+                            var sw = softwareManager.GetRemoteSoftware(target.IP, target.Username, target.Password);
+                            string pcName = target.IP;
                             foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
                             dbManager.CheckForUpdates(sw, pcName);
+
                             Invoke(new MethodInvoker(() =>
                             {
                                 hardwareInfoTextBox.Text = hw;
                                 DisplaySoftwareGrid(sw, pcName);
                                 dbManager.SaveSoftware(sw);
                                 UpdateHardwareLabels(pcName, true);
-                                EndScanUI("Remote Abfrage abgeschlossen");
-                                remoteHardwareButton.Enabled = true;
                             }));
+                            success++;
                         }
                         catch (Exception ex)
                         {
-                            Invoke(new MethodInvoker(() => { MessageBox.Show($"Fehler: {ex.Message}"); EndScanUI("Fehler bei Remote Abfrage"); remoteHardwareButton.Enabled = true; }));
+                            errors.Add($"{target.IP}: {ex.Message}");
                         }
-                    });
-                }
+                    }
+
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        remoteHardwareButton.Enabled = true;
+                        if (errors.Count == 0)
+                            EndScanUI(total == 1
+                                ? "Remote-Abfrage abgeschlossen"
+                                : $"✅ {success}/{total} Geräte erfolgreich abgefragt");
+                        else
+                        {
+                            EndScanUI($"⚠️ {success}/{total} erfolgreich — {errors.Count} Fehler");
+                            MessageBox.Show(
+                                "Fehler bei folgenden Geräten:\n\n" + string.Join("\n", errors),
+                                "Teilweise Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                    }));
+                });
             }
         }
 
@@ -1262,7 +1386,7 @@ namespace NmapInventory
             else
             {
                 // Remote — Anmeldedaten abfragen
-                using (var form = new RemoteConnectionForm())
+                using (var form = new RemoteConnectionForm(dbManager))
                 {
                     form.SetIP(ip); // IP vorausfüllen
                     if (form.ShowDialog(this) != DialogResult.OK)
@@ -2284,6 +2408,7 @@ namespace NmapInventory
         static void Main()
         {
             Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm());
         }
     }

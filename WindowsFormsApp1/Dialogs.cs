@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
 
@@ -43,42 +44,192 @@ namespace NmapInventory
         public string ComputerIP { get; private set; }
         public string Username { get; private set; }
         public string Password { get; private set; }
+        // Mehrfachauswahl aus Picker — enthält alle ausgewählten Einträge
+        public List<(string IP, string Username, string Password)> SelectedTargets { get; private set; }
+            = new List<(string, string, string)>();
 
         private TextBox ipTb, userTb, passTb;
-        private CheckBox chkSave;
-        private ComboBox cmbSaved;
+        private Button btnDeleteEntry;
 
-        public RemoteConnectionForm()
+        private readonly DatabaseManager _db;
+
+        public RemoteConnectionForm() : this(null) { }
+
+        public RemoteConnectionForm(DatabaseManager db)
         {
+            _db = db;
             Text = "Remote Verbindung";
-            Width = 520; Height = 370;
+            Width = 520; Height = 400;
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             Font = new System.Drawing.Font("Segoe UI", 9);
 
-            // Gespeicherte Zugangsdaten laden
-            var saved = CredentialStore.GetAll();
-
             // ── Gespeicherte Auswahl ──────────────────────────
             var lblSaved = new Label { Text = "Gespeichert:", Location = new Point(20, 14), AutoSize = true };
-            cmbSaved = new ComboBox
+            var btnPickSaved = new Button
             {
-                Location = new Point(110, 11),
+                Text = "📋 Gespeicherte Zugangsdaten wählen...",
+                Location = new Point(110, 10),
                 Width = 270,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
-            cmbSaved.Items.Add("-- Neu eingeben --");
-            foreach (var c in saved)
-                cmbSaved.Items.Add(c);
-            cmbSaved.SelectedIndex = 0;
-
-            var btnDelete = new Button
-            {
-                Text = "🗑",
-                Location = new Point(388, 10),
-                Width = 30,
                 Height = 24,
                 Font = new System.Drawing.Font("Segoe UI", 9)
+            };
+            btnPickSaved.Click += (s, e) =>
+            {
+                // Session entsperren falls nötig
+                if (!SessionKey.IsSet)
+                {
+                    if (CredentialStore.GetAllRaw().Count == 0)
+                    {
+                        MessageBox.Show("Noch keine Zugangsdaten gespeichert.", "Hinweis",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+                    using (var pwDlg = new CredentialPasswordDialog())
+                    {
+                        if (pwDlg.ShowDialog() != DialogResult.OK) return;
+                        SessionKey.Set(pwDlg.EnteredPassword);
+                    }
+                }
+
+                using (var picker = new SavedCredentialsPicker(_db))
+                {
+                    if (picker.ShowDialog(this) == DialogResult.OK && picker.SelectedEntries.Count > 0)
+                    {
+                        if (picker.SelectedEntries.Count == 1)
+                        {
+                            // Einzelauswahl — Felder befüllen wie bisher
+                            var sel = picker.SelectedEntries[0];
+                            ipTb.Text = sel.IP;
+                            userTb.Text = sel.Username;
+                            passTb.Text = CredentialStore.Decrypt(sel.EncryptedPassword);
+                            btnDeleteEntry.Enabled = true;
+                        }
+                        else
+                        {
+                            // Mehrfachauswahl — SelectedTargets befüllen + erstes Gerät anzeigen
+                            SelectedTargets = picker.SelectedEntries
+                                .Select(entry => (entry.IP, entry.Username, CredentialStore.Decrypt(entry.EncryptedPassword)))
+                                .ToList();
+                            var first = picker.SelectedEntries[0];
+                            ipTb.Text = first.IP;
+                            userTb.Text = first.Username;
+                            passTb.Text = CredentialStore.Decrypt(first.EncryptedPassword);
+                            btnDeleteEntry.Enabled = true;
+                            // Hinweis anzeigen
+                            MessageBox.Show(
+                                $"{picker.SelectedEntries.Count} Geräte ausgewählt.\n" +
+                                "Alle werden beim Klick auf 'Verbinden' nacheinander abgefragt.",
+                                "Mehrfachauswahl", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                    }
+                }
+            };
+
+
+            // ── Kunden-IP Import ──────────────────────────────
+            // Lädt IPs direkt aus der Kunden-Datenbank
+            var lblKunde = new Label { Text = "Aus Kunde:", Location = new Point(20, 47), AutoSize = true };
+            var cmbKunde = new ComboBox
+            {
+                Location = new Point(110, 44),
+                Width = 200,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            var cmbIP = new ComboBox
+            {
+                Location = new Point(318, 44),
+                Width = 165,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cmbKunde.Items.Add(new CustomerItem { ID = -1, Name = "-- Kunden wählen --" });
+            cmbKunde.SelectedIndex = 0;
+
+            // Kunden laden falls DB vorhanden
+            if (_db != null)
+            {
+                try
+                {
+                    foreach (var k in _db.GetCustomers())
+                        cmbKunde.Items.Add(new CustomerItem { ID = k.ID, Name = k.Name });
+                }
+                catch { }
+            }
+
+            // Bei Kunden-Auswahl: IPs aus allen Standorten laden
+            cmbKunde.SelectedIndexChanged += (s, e) =>
+            {
+                cmbIP.Items.Clear();
+                cmbIP.Items.Add(new IPItem { Display = "-- Gerät wählen --", IP = "" });
+                cmbIP.SelectedIndex = 0;
+                if (_db == null || !(cmbKunde.SelectedItem is CustomerItem ki) || ki.ID < 0) return;
+                try
+                {
+                    var locs = _db.GetLocationsByCustomer(ki.ID);
+                    foreach (var loc in locs)
+                        foreach (var lip in _db.GetIPsWithWorkstationByLocation(loc.ID))
+                            cmbIP.Items.Add(new IPItem
+                            {
+                                Display = string.IsNullOrEmpty(lip.WorkstationName) ? lip.IPAddress : lip.WorkstationName,
+                                IP = lip.IPAddress
+                            });
+                }
+                catch { }
+            };
+
+            // Bei IP-Auswahl: IP-Feld befüllen, Gerätename als Alias vorschlagen
+            cmbIP.SelectedIndexChanged += (s, e) =>
+            {
+                if (!(cmbIP.SelectedItem is IPItem item) || string.IsNullOrEmpty(item.IP)) return;
+                ipTb.Text = item.IP;
+
+                // Alias vorschlagen
+                var alias = Controls.Find("aliasTb", false).FirstOrDefault() as TextBox;
+                if (alias != null && (alias.ForeColor == Color.Gray || string.IsNullOrEmpty(alias.Text)))
+                {
+                    alias.Text = item.Display;
+                    alias.ForeColor = SystemColors.WindowText;
+                }
+
+                // Gespeicherte Zugangsdaten für diese IP laden
+                // Falls Session noch nicht entsperrt: erst prüfen ob Eintrag existiert,
+                // dann Passwort abfragen
+                var allSaved = CredentialStore.GetAllRaw();
+                var match = allSaved.FirstOrDefault(c => c.IP == item.IP);
+
+                if (match != null)
+                {
+                    // Eintrag vorhanden — Session entsperren falls nötig
+                    if (!SessionKey.IsSet)
+                    {
+                        using (var pwDlg = new CredentialPasswordDialog())
+                        {
+                            if (pwDlg.ShowDialog() == DialogResult.OK)
+                                SessionKey.Set(pwDlg.EnteredPassword);
+                        }
+                    }
+
+                    if (SessionKey.IsSet)
+                    {
+                        userTb.Text = match.Username;
+                        passTb.Text = CredentialStore.Decrypt(match.EncryptedPassword);
+                        btnDeleteEntry.Enabled = true;
+                    }
+                }
+                else
+                {
+                    // Kein gespeicherter Eintrag — Felder zurücksetzen
+                    userTb.Text = "admin";
+                    passTb.Text = "";
+                }
+            };
+
+            var sep2 = new Panel
+            {
+                Location = new Point(0, 74),
+                Width = 520,
+                Height = 1,
+                BackColor = System.Drawing.Color.FromArgb(200, 200, 200)
             };
 
             // ── Felder ────────────────────────────────────────
@@ -93,61 +244,62 @@ namespace NmapInventory
             ipTb = new TextBox
             {
                 Name = "ipTextBox",
-                Location = new Point(110, 52),
+                Location = new Point(110, 84),
                 Width = 310,
                 Font = new System.Drawing.Font("Segoe UI", 10)
             };
             userTb = new TextBox
             {
-                Location = new Point(110, 84),
+                Location = new Point(110, 116),
                 Width = 310,
-                Text = Environment.UserName,
+                Text = "admin",
                 Font = new System.Drawing.Font("Segoe UI", 10)
             };
             passTb = new TextBox
             {
-                Location = new Point(110, 116),
+                Location = new Point(110, 148),
                 Width = 310,
                 UseSystemPasswordChar = true,
                 Font = new System.Drawing.Font("Segoe UI", 10)
             };
 
-            // ── Speichern-Checkbox ────────────────────────────
-            chkSave = new CheckBox
-            {
-                Text = "Zugangsdaten verschlüsselt speichern",
-                Location = new Point(110, 150),
-                AutoSize = true,
-                Checked = true
-            };
-
-            var lblAlias = new Label { Text = "Bezeichnung:", Location = new Point(110, 178), AutoSize = true };
+            // ── Bezeichnung ───────────────────────────────────
+            var lblAlias = new Label { Text = "Bezeichnung:", Location = new Point(20, 182), AutoSize = true };
             var aliasTb = new TextBox
             {
                 Name = "aliasTb",
-                Location = new Point(200, 175),
-                Width = 220,
+                Location = new Point(110, 179),
+                Width = 310,
                 Text = "z.B. Büro-PC",
                 ForeColor = Color.Gray
             };
             aliasTb.GotFocus += (s, e) => { if (aliasTb.ForeColor == Color.Gray) { aliasTb.Text = ""; aliasTb.ForeColor = SystemColors.WindowText; } };
             aliasTb.LostFocus += (s, e) => { if (string.IsNullOrEmpty(aliasTb.Text)) { aliasTb.Text = "z.B. Büro-PC"; aliasTb.ForeColor = Color.Gray; } };
-            chkSave.CheckedChanged += (s, e) => { lblAlias.Visible = chkSave.Checked; aliasTb.Visible = chkSave.Checked; };
+
+            var sep3 = new Panel
+            {
+                Location = new Point(0, 205),
+                Width = 520,
+                Height = 1,
+                BackColor = System.Drawing.Color.FromArgb(200, 200, 200)
+            };
 
             var hinweis = new Label
             {
-                Text = "Verschlüsselung via Windows DPAPI — nur auf diesem PC entschlüsselbar.",
-                Location = new Point(20, 210),
-                Size = new Size(470, 16),
+                Text = "AES-256 verschlüsselt — Passwort nur im RAM.",
+                Location = new Point(20, 212),
+                AutoSize = true,
                 Font = new System.Drawing.Font("Segoe UI", 8),
                 ForeColor = System.Drawing.Color.DarkSlateGray
             };
 
-            // ── Buttons ───────────────────────────────────────
+            // ── Button-Leiste ─────────────────────────────────
+            // [Verbinden]  [Abbrechen]  (Zeile 1)
+            // [💾 Speichern]  [🗑 Löschen]  (Zeile 2)
             var okBtn = new Button
             {
                 Text = "Verbinden",
-                Location = new Point(110, 235),
+                Location = new Point(20, 232),
                 Width = 120,
                 Height = 28,
                 Font = new System.Drawing.Font("Segoe UI", 10, System.Drawing.FontStyle.Bold),
@@ -156,39 +308,88 @@ namespace NmapInventory
             var cancelBtn = new Button
             {
                 Text = "Abbrechen",
-                Location = new Point(240, 235),
-                Width = 100,
+                Location = new Point(148, 232),
+                Width = 110,
                 Height = 28,
                 Font = new System.Drawing.Font("Segoe UI", 10),
                 DialogResult = DialogResult.Cancel
             };
 
-            // Gespeicherten Eintrag laden wenn ausgewählt
-            cmbSaved.SelectedIndexChanged += (s, e) =>
+            var btnSave = new Button
             {
-                if (cmbSaved.SelectedIndex <= 0) return;
-                var sel = cmbSaved.SelectedItem as CredentialEntry;
-                if (sel == null) return;
-                ipTb.Text = sel.IP;
-                userTb.Text = sel.Username;
-                passTb.Text = CredentialStore.Decrypt(sel.EncryptedPassword);
-                chkSave.Checked = false; // nicht automatisch nochmal speichern
+                Text = "💾 Speichern",
+                Location = new Point(20, 268),
+                Width = 120,
+                Height = 28,
+                Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold)
+            };
+            btnDeleteEntry = new Button
+            {
+                Text = "🗑 Löschen",
+                Location = new Point(148, 268),
+                Width = 110,
+                Height = 28,
+                Font = new System.Drawing.Font("Segoe UI", 9),
+                Enabled = false
             };
 
-            // Gespeicherten Eintrag löschen
-            btnDelete.Click += (s, e) =>
+            // Speichern-Button
+            btnSave.Click += (s, e) =>
             {
-                if (cmbSaved.SelectedIndex <= 0) return;
-                var sel = cmbSaved.SelectedItem as CredentialEntry;
-                if (sel == null) return;
-                if (MessageBox.Show($"Eintrag '{sel.Alias}' löschen?", "Löschen",
+                string ip = ipTb.Text.Trim();
+                string user = userTb.Text.Trim();
+                string pass = passTb.Text;
+
+                if (string.IsNullOrEmpty(ip) || string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass))
+                {
+                    MessageBox.Show("Bitte IP, Benutzername und Passwort eingeben.",
+                        "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                // Passwort abfragen falls noch nicht gesetzt
+                if (!SessionKey.IsSet)
+                {
+                    using (var pwDlg = new CredentialPasswordDialog())
+                    {
+                        if (pwDlg.ShowDialog() != DialogResult.OK) return;
+                        SessionKey.Set(pwDlg.EnteredPassword);
+                    }
+                }
+
+                string alias = aliasTb.Text.Trim();
+                if (string.IsNullOrEmpty(alias) || alias == "z.B. Büro-PC")
+                    alias = $"{user}@{ip}";
+
+                CredentialStore.Save(new CredentialEntry
+                {
+                    Alias = alias,
+                    IP = ip,
+                    Username = user,
+                    EncryptedPassword = CredentialStore.Encrypt(pass)
+                });
+
+                MessageBox.Show($"Eintrag '{alias}' gespeichert.", "Gespeichert",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+
+            // Einzelnen Eintrag löschen — anhand der aktuell eingetragenen IP
+            btnDeleteEntry.Click += (s, e) =>
+            {
+                string ip = ipTb.Text.Trim();
+                var match = CredentialStore.GetAllRaw().FirstOrDefault(c => c.IP == ip);
+                if (match == null) { MessageBox.Show("Kein gespeicherter Eintrag für diese IP.", "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                if (MessageBox.Show($"Eintrag '{match.Alias}' löschen?", "Löschen",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                 {
-                    CredentialStore.Delete(sel.Alias);
-                    cmbSaved.Items.Remove(sel);
-                    cmbSaved.SelectedIndex = 0;
+                    CredentialStore.Delete(match.Alias);
+                    ipTb.Text = "";
+                    userTb.Text = "admin";
+                    passTb.Text = "";
+                    btnDeleteEntry.Enabled = false;
                 }
             };
+
 
             okBtn.Click += (s, e) =>
             {
@@ -206,52 +407,39 @@ namespace NmapInventory
                 {
                     MessageBox.Show("Bitte Benutzernamen eingeben!", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     DialogResult = DialogResult.None;
-                    return;
-                }
-
-                // Zugangsdaten speichern wenn gewünscht
-                if (chkSave.Checked && !string.IsNullOrEmpty(Password))
-                {
-                    string alias = aliasTb.Text.Trim();
-                    if (string.IsNullOrEmpty(alias))
-                        alias = $"{Username}@{ComputerIP}";
-                    CredentialStore.Save(new CredentialEntry
-                    {
-                        Alias = alias,
-                        IP = ComputerIP,
-                        Username = Username,
-                        EncryptedPassword = CredentialStore.Encrypt(Password)
-                    });
                 }
             };
 
             Controls.AddRange(new Control[] {
-                lblSaved, cmbSaved, btnDelete, sep,
-                new Label { Text = "Computer-IP:",  Location = new Point(20, 55),  AutoSize = true },
+                lblSaved, btnPickSaved, sep,
+                lblKunde, cmbKunde, cmbIP, sep2,
+                new Label { Text = "Computer-IP:",  Location = new Point(20, 87),  AutoSize = true },
                 ipTb,
-                new Label { Text = "Benutzername:", Location = new Point(20, 87),  AutoSize = true },
+                new Label { Text = "Benutzername:", Location = new Point(20, 119), AutoSize = true },
                 userTb,
-                new Label { Text = "Passwort:",     Location = new Point(20, 119), AutoSize = true },
+                new Label { Text = "Passwort:",     Location = new Point(20, 151), AutoSize = true },
                 passTb,
-                chkSave, lblAlias, aliasTb, hinweis,
-                okBtn, cancelBtn
+                lblAlias, aliasTb, sep3, hinweis,
+                okBtn, cancelBtn, btnSave, btnDeleteEntry
             });
             AcceptButton = okBtn;
             CancelButton = cancelBtn;
+
+            // SessionKey beim Schließen löschen — muss jedes Mal neu eingegeben werden
+            FormClosed += (s, e) => SessionKey.Clear();
         }
 
         public void SetIP(string ip)
         {
             if (ipTb != null) ipTb.Text = ip;
 
-            // Passenden gespeicherten Eintrag automatisch vorwählen
-            for (int i = 1; i < cmbSaved.Items.Count; i++)
+            // Gespeicherten Eintrag für diese IP automatisch laden
+            var match = CredentialStore.GetAllRaw().FirstOrDefault(c => c.IP == ip);
+            if (match != null && SessionKey.IsSet)
             {
-                if (cmbSaved.Items[i] is CredentialEntry e && e.IP == ip)
-                {
-                    cmbSaved.SelectedIndex = i;
-                    return;
-                }
+                userTb.Text = match.Username;
+                passTb.Text = CredentialStore.Decrypt(match.EncryptedPassword);
+                btnDeleteEntry.Enabled = true;
             }
         }
     }
@@ -261,6 +449,275 @@ namespace NmapInventory
     // Speichert Zugangsdaten verschlüsselt mit Windows-Benutzerkonto.
     // Nur auf dem gleichen PC + Benutzer entschlüsselbar.
     // =========================================================
+
+    // =========================================================
+    // === GESPEICHERTE ZUGANGSDATEN — AUSWAHL-POPUP ===
+    // Zeigt alle gespeicherten Einträge nach Kunden gruppiert.
+    // =========================================================
+    public class SavedCredentialsPicker : Form
+    {
+        // Für Einzelauswahl (Kompatibilität)
+        public CredentialEntry Selected => SelectedEntries.Count > 0 ? SelectedEntries[0] : null;
+        // Für Mehrfachauswahl
+        public List<CredentialEntry> SelectedEntries { get; private set; } = new List<CredentialEntry>();
+
+        private readonly DatabaseManager _db;
+        private TreeView tree;
+        private Label lblCount;
+
+        public SavedCredentialsPicker(DatabaseManager db)
+        {
+            _db = db;
+            Text = "Gespeicherte Zugangsdaten auswählen";
+            Size = new Size(440, 530);
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            Font = new Font("Segoe UI", 9);
+
+            var header = new Label
+            {
+                Text = "Geräte auswählen (Mehrfachauswahl möglich):",
+                Location = new Point(12, 12),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold)
+            };
+
+            tree = new TreeView
+            {
+                Location = new Point(12, 34),
+                Size = new Size(406, 380),
+                FullRowSelect = true,
+                ShowLines = true,
+                ShowPlusMinus = true,
+                CheckBoxes = true,
+                Font = new Font("Segoe UI", 9)
+            };
+
+            LoadTree();
+
+            // Kunden-Knoten anklicken → alle Kinder an/abwählen
+            tree.AfterCheck += (s, e) =>
+            {
+                if (e.Action == TreeViewAction.Unknown) return;
+                // Kunden-Gruppe: alle Kinder synchronisieren
+                if (e.Node.Tag == null)
+                {
+                    foreach (TreeNode child in e.Node.Nodes)
+                        child.Checked = e.Node.Checked;
+                }
+                // Gerät: Eltern-Status aktualisieren
+                else if (e.Node.Parent != null)
+                {
+                    bool allChecked = true;
+                    foreach (TreeNode sibling in e.Node.Parent.Nodes)
+                    {
+                        if (!sibling.Checked) allChecked = false;
+                    }
+                    e.Node.Parent.Checked = allChecked;
+                }
+                UpdateCount();
+            };
+
+            // Doppelklick = Einzelauswahl sofort bestätigen
+            tree.NodeMouseDoubleClick += (s, e) =>
+            {
+                if (e.Node?.Tag is CredentialEntry)
+                {
+                    e.Node.Checked = true;
+                    ConfirmSelection();
+                }
+            };
+
+            lblCount = new Label
+            {
+                Text = "0 Geräte ausgewählt",
+                Location = new Point(12, 420),
+                Size = new Size(280, 18),
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+
+            // Alle / Keine Buttons
+            var btnAll = new Button
+            {
+                Text = "✔ Alle",
+                Location = new Point(290, 416),
+                Width = 60,
+                Height = 24,
+                Font = new Font("Segoe UI", 8)
+            };
+            btnAll.Click += (s, e) =>
+            {
+                foreach (TreeNode root in tree.Nodes)
+                    foreach (TreeNode child in root.Nodes)
+                        child.Checked = true;
+                UpdateCount();
+            };
+
+            var btnNone = new Button
+            {
+                Text = "✖ Keine",
+                Location = new Point(356, 416),
+                Width = 62,
+                Height = 24,
+                Font = new Font("Segoe UI", 8)
+            };
+            btnNone.Click += (s, e) =>
+            {
+                foreach (TreeNode root in tree.Nodes)
+                    foreach (TreeNode child in root.Nodes)
+                        child.Checked = false;
+                UpdateCount();
+            };
+
+            var btnOk = new Button
+            {
+                Text = "Abfragen",
+                Location = new Point(12, 448),
+                Width = 130,
+                Height = 30,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                DialogResult = DialogResult.OK
+            };
+            btnOk.Click += (s, e) => ConfirmSelection();
+
+            var btnCancel = new Button
+            {
+                Text = "Abbrechen",
+                Location = new Point(152, 448),
+                Width = 110,
+                Height = 30,
+                DialogResult = DialogResult.Cancel
+            };
+
+            Controls.AddRange(new Control[] { header, tree, lblCount, btnAll, btnNone, btnOk, btnCancel });
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+        }
+
+        private void UpdateCount()
+        {
+            int count = 0;
+            foreach (TreeNode root in tree.Nodes)
+                foreach (TreeNode child in root.Nodes)
+                    if (child.Checked) count++;
+            lblCount.Text = count == 0 ? "Kein Gerät ausgewählt"
+                : count == 1 ? "1 Gerät ausgewählt"
+                : $"{count} Geräte ausgewählt";
+        }
+
+        private void ConfirmSelection()
+        {
+            SelectedEntries = new List<CredentialEntry>();
+            foreach (TreeNode root in tree.Nodes)
+                foreach (TreeNode child in root.Nodes)
+                    if (child.Checked && child.Tag is CredentialEntry entry)
+                        SelectedEntries.Add(entry);
+
+            if (SelectedEntries.Count == 0)
+            {
+                MessageBox.Show("Bitte mindestens ein Gerät auswählen.", "Hinweis",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                DialogResult = DialogResult.None;
+                return;
+            }
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+
+        private void LoadTree()
+        {
+            tree.Nodes.Clear();
+            var entries = CredentialStore.GetAllRaw();
+            if (entries.Count == 0)
+            {
+                tree.Nodes.Add("(Keine gespeicherten Einträge)");
+                return;
+            }
+
+            // Kunden aus DB laden für Gruppierung
+            var kundenMap = new Dictionary<string, TreeNode>();
+
+            if (_db != null)
+            {
+                try
+                {
+                    foreach (var k in _db.GetCustomers())
+                    {
+                        // IPs dieses Kunden sammeln
+                        var kundeIPs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var loc in _db.GetLocationsByCustomer(k.ID))
+                            foreach (var lip in _db.GetIPsWithWorkstationByLocation(loc.ID))
+                                kundeIPs.Add(lip.IPAddress);
+
+                        // Gespeicherte Einträge die zu diesem Kunden gehören
+                        var kundeEntries = entries.Where(e => kundeIPs.Contains(e.IP)).ToList();
+                        if (kundeEntries.Count == 0) continue;
+
+                        var kundeNode = new TreeNode($"👤  {k.Name}  ({kundeEntries.Count})")
+                        {
+                            Tag = null,
+                            NodeFont = new Font("Segoe UI", 9, FontStyle.Bold)
+                        };
+
+                        foreach (var entry in kundeEntries)
+                        {
+                            var node = new TreeNode($"🖥  {entry.Alias}  —  {entry.IP}")
+                            {
+                                Tag = entry
+                            };
+                            kundeNode.Nodes.Add(node);
+                        }
+                        kundeNode.Expand();
+                        tree.Nodes.Add(kundeNode);
+
+                        // Bereits zugeordnete Einträge merken
+                        foreach (var e in kundeEntries)
+                            kundenMap[e.IP] = kundeNode;
+                    }
+                }
+                catch { }
+            }
+
+            // Nicht zugeordnete Einträge unter "Sonstige"
+            var unassigned = entries.Where(e => !kundenMap.ContainsKey(e.IP)).ToList();
+            if (unassigned.Count > 0)
+            {
+                var sonstigeNode = new TreeNode($"📁  Sonstige  ({unassigned.Count})")
+                {
+                    NodeFont = new Font("Segoe UI", 9, FontStyle.Bold)
+                };
+                foreach (var entry in unassigned)
+                {
+                    var node = new TreeNode($"🖥  {entry.Alias}  —  {entry.IP}")
+                    {
+                        Tag = entry
+                    };
+                    sonstigeNode.Nodes.Add(node);
+                }
+                sonstigeNode.Expand();
+                tree.Nodes.Add(sonstigeNode);
+            }
+        }
+
+    }
+
+    // Wrapper für ComboBox-Anzeige
+    internal class CustomerItem
+    {
+        public int ID { get; set; }
+        public string Name { get; set; }
+        public override string ToString() => Name ?? "";
+    }
+
+    internal class IPItem
+    {
+        public string Display { get; set; } // Gerätename oder IP
+        public string IP { get; set; } // immer die echte IP
+        public override string ToString() => Display ?? IP ?? "";
+    }
+
     public class CredentialEntry
     {
         public string Alias { get; set; }
@@ -277,27 +734,168 @@ namespace NmapInventory
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "NmapInventory", "credentials.dat");
 
+        // Verifikationsdatei — enthält verschlüsselten Prüftext
+        private static readonly string VerifyPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "NmapInventory", "credentials.verify");
+
+        private const string VerifyMagic = "NMAP_INVENTORY_OK"; // bekannter Klartext
+
+        // ── PBKDF2 + AES-256 ─────────────────────────────────
+        private const int KeySize = 32;
+        private const int IVSize = 16;
+        private const int SaltSize = 16;
+        private const int Iterations = 10000;
+
+        private static byte[] DeriveKey(string password, byte[] salt)
+        {
+            using (var kdf = new Rfc2898DeriveBytes(password, salt, Iterations, HashAlgorithmName.SHA256))
+                return kdf.GetBytes(KeySize);
+        }
+
+        // Prüft ob das Passwort korrekt ist.
+        // Beim allerersten Aufruf: Verifikationsdatei anlegen und true zurückgeben.
+        // Danach: Nur true wenn HMAC-Signatur stimmt.
+        // Erster Aufruf — Verifikationsdatei mit Standardpasswort 1234 anlegen
+        public static bool VerifyPassword(string password)
+        {
+            if (!File.Exists(VerifyPath))
+            {
+                CreateVerifyFile("1234");
+                // Prüfen ob eingegebenes Passwort dem Standard entspricht  Veschlüsselung
+                byte[] data = Convert.FromBase64String(File.ReadAllText(VerifyPath).Trim());
+                byte[] salt = new byte[SaltSize]; Buffer.BlockCopy(data, 0, salt, 0, SaltSize);
+                byte[] stored = new byte[32]; Buffer.BlockCopy(data, SaltSize, stored, 0, 32);
+                byte[] computed = ComputeHmac(password, salt);
+                int diff = 0;
+                for (int i = 0; i < computed.Length; i++) diff |= computed[i] ^ stored[i];
+                return diff == 0;
+            }
+            try
+            {
+                // Datei lesen: Salt(16) + HMAC(32)
+                byte[] data = Convert.FromBase64String(File.ReadAllText(VerifyPath).Trim());
+                if (data.Length < SaltSize + 32) return false;
+
+                byte[] salt = new byte[SaltSize];
+                byte[] stored = new byte[32];
+                Buffer.BlockCopy(data, 0, salt, 0, SaltSize);
+                Buffer.BlockCopy(data, SaltSize, stored, 0, 32);
+
+                byte[] computed = ComputeHmac(password, salt);
+                // Zeitkonstanter Vergleich gegen Timing-Angriffe
+                if (computed.Length != stored.Length) return false;
+                int diff = 0;
+                for (int i = 0; i < computed.Length; i++)
+                    diff |= computed[i] ^ stored[i];
+                return diff == 0;
+            }
+            catch { return false; }
+        }
+
+        // Erzeugt HMAC-SHA256 aus Passwort + Salt (PBKDF2-abgeleiteter Schlüssel)
+        private static byte[] ComputeHmac(string password, byte[] salt)
+        {
+            byte[] key = DeriveKey(password, salt);
+            using (var hmac = new HMACSHA256(key))
+                return hmac.ComputeHash(Encoding.UTF8.GetBytes(VerifyMagic));
+        }
+
+        // Legt die Verifikationsdatei an
+        private static void CreateVerifyFile(string password)
+        {
+            try
+            {
+                byte[] salt = new byte[SaltSize];
+                using (var rng = RandomNumberGenerator.Create())
+                    rng.GetBytes(salt);
+
+                byte[] hmac = ComputeHmac(password, salt);
+                byte[] result = new byte[SaltSize + hmac.Length];
+                Buffer.BlockCopy(salt, 0, result, 0, SaltSize);
+                Buffer.BlockCopy(hmac, 0, result, SaltSize, hmac.Length);
+
+                Directory.CreateDirectory(Path.GetDirectoryName(VerifyPath));
+                File.WriteAllText(VerifyPath, Convert.ToBase64String(result));
+            }
+            catch { }
+        }
+
+        // Speichert das Passwort als Verifikationsdatei (beim ersten Speichern)
+        private static void SaveVerification(string password)
+        {
+            if (File.Exists(VerifyPath)) return;
+            CreateVerifyFile(password);
+        }
+
         public static string Encrypt(string plainText)
         {
             if (string.IsNullOrEmpty(plainText)) return "";
-            var bytes = Encoding.UTF8.GetBytes(plainText);
-            var encrypted = System.Security.Cryptography.ProtectedData.Protect(bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
-            return Convert.ToBase64String(encrypted);
+            string password = SessionKey.Current;
+            if (string.IsNullOrEmpty(password)) return "";
+            try
+            {
+                byte[] salt = new byte[SaltSize];
+                using (var rng = RandomNumberGenerator.Create())
+                    rng.GetBytes(salt);
+
+                byte[] key = DeriveKey(password, salt);
+                using (var aes = Aes.Create())
+                {
+                    aes.Key = key;
+                    aes.Mode = CipherMode.CBC;
+                    aes.Padding = PaddingMode.PKCS7;
+                    aes.GenerateIV();
+                    using (var enc = aes.CreateEncryptor())
+                    {
+                        byte[] plain = Encoding.UTF8.GetBytes(plainText);
+                        byte[] cipher = enc.TransformFinalBlock(plain, 0, plain.Length);
+                        // Format: Salt(16) + IV(16) + CipherText
+                        byte[] result = new byte[SaltSize + IVSize + cipher.Length];
+                        Buffer.BlockCopy(salt, 0, result, 0, SaltSize);
+                        Buffer.BlockCopy(aes.IV, 0, result, SaltSize, IVSize);
+                        Buffer.BlockCopy(cipher, 0, result, SaltSize + IVSize, cipher.Length);
+                        return Convert.ToBase64String(result);
+                    }
+                }
+            }
+            catch { return ""; }
         }
 
         public static string Decrypt(string encryptedBase64)
         {
             if (string.IsNullOrEmpty(encryptedBase64)) return "";
+            string password = SessionKey.Current;
+            if (string.IsNullOrEmpty(password)) return "";
             try
             {
-                var bytes = Convert.FromBase64String(encryptedBase64);
-                var decrypted = System.Security.Cryptography.ProtectedData.Unprotect(bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
-                return Encoding.UTF8.GetString(decrypted);
+                byte[] data = Convert.FromBase64String(encryptedBase64);
+                byte[] salt = new byte[SaltSize];
+                byte[] iv = new byte[IVSize];
+                byte[] cipher = new byte[data.Length - SaltSize - IVSize];
+                Buffer.BlockCopy(data, 0, salt, 0, SaltSize);
+                Buffer.BlockCopy(data, SaltSize, iv, 0, IVSize);
+                Buffer.BlockCopy(data, SaltSize + IVSize, cipher, 0, cipher.Length);
+
+                byte[] key = DeriveKey(password, salt);
+                using (var aes = Aes.Create())
+                {
+                    aes.Key = key;
+                    aes.IV = iv;
+                    aes.Mode = CipherMode.CBC;
+                    aes.Padding = PaddingMode.PKCS7;
+                    using (var dec = aes.CreateDecryptor())
+                    {
+                        byte[] plain = dec.TransformFinalBlock(cipher, 0, cipher.Length);
+                        return Encoding.UTF8.GetString(plain);
+                    }
+                }
             }
             catch { return ""; }
         }
 
-        public static List<CredentialEntry> GetAll()
+        // Liest alle Einträge roh (ohne Entschlüsselung) — für Existenzprüfung
+        public static List<CredentialEntry> GetAllRaw()
         {
             var list = new List<CredentialEntry>();
             if (!File.Exists(FilePath)) return list;
@@ -305,7 +903,7 @@ namespace NmapInventory
             {
                 foreach (var line in File.ReadAllLines(FilePath))
                 {
-                    var parts = line.Split('	');
+                    var parts = line.Split('\t');
                     if (parts.Length == 4)
                         list.Add(new CredentialEntry
                         {
@@ -320,9 +918,14 @@ namespace NmapInventory
             return list;
         }
 
+        public static List<CredentialEntry> GetAll() => GetAllRaw();
+
         public static void Save(CredentialEntry entry)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
+
+            // Verifikationsdatei beim ersten Speichern anlegen
+            SaveVerification(SessionKey.Current);
             var all = GetAll();
 
             // Bestehenden Eintrag mit gleichem Alias überschreiben
@@ -738,4 +1341,205 @@ namespace NmapInventory
             public override string ToString() => Display;
         }
     }
+
+    // =========================================================
+    // === SESSION-SCHLÜSSEL ===
+    // Hält das Benutzerpasswort für die laufende Session im RAM.
+    // Wird nie auf Disk geschrieben.
+    // =========================================================
+    public static class SessionKey
+    {
+        private static string _key = null;
+
+        public static string Current => _key;
+        public static bool IsSet => !string.IsNullOrEmpty(_key);
+
+        public static void Set(string password) => _key = password;
+        public static void Clear() => _key = null;
+    }
+
+    // =========================================================
+    // === LOGIN-DIALOG ===
+    // Wird beim Programmstart angezeigt.
+    // Passwort bleibt nur im RAM (SessionKey).
+    // =========================================================
+    public class LoginDialog : Form
+    {
+        public LoginDialog()
+        {
+            Text = "NmapInventory — Anmeldung";
+            Size = new Size(400, 240);
+            StartPosition = FormStartPosition.CenterScreen;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            Font = new Font("Segoe UI", 10);
+
+            // Logo / Titel
+            var title = new Label
+            {
+                Text = "NmapInventory",
+                Location = new Point(20, 18),
+                Font = new Font("Segoe UI", 14, FontStyle.Bold),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(40, 80, 140)
+            };
+            var sub = new Label
+            {
+                Text = "Bitte Passwort eingeben um fortzufahren.",
+                Location = new Point(20, 48),
+                AutoSize = true,
+                ForeColor = Color.DarkSlateGray
+            };
+
+            var lblPw = new Label { Text = "Passwort:", Location = new Point(20, 88), AutoSize = true };
+            var pwBox = new TextBox
+            {
+                Location = new Point(100, 85),
+                Width = 260,
+                UseSystemPasswordChar = true,
+                Font = new Font("Segoe UI", 10)
+            };
+
+            var btnOk = new Button
+            {
+                Text = "Anmelden",
+                Location = new Point(100, 122),
+                Width = 130,
+                Height = 28,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                DialogResult = DialogResult.OK
+            };
+            var btnCancel = new Button
+            {
+                Text = "Abbrechen",
+                Location = new Point(240, 122),
+                Width = 120,
+                Height = 28,
+                DialogResult = DialogResult.Cancel
+            };
+
+            var lblHint = new Label
+            {
+                Text = "Beim ersten Start ein neues Passwort vergeben.",
+                Location = new Point(20, 165),
+                Size = new Size(350, 16),
+                Font = new Font("Segoe UI", 8),
+                ForeColor = Color.Gray
+            };
+
+            btnOk.Click += (s, e) =>
+            {
+                if (string.IsNullOrEmpty(pwBox.Text))
+                {
+                    MessageBox.Show("Bitte ein Passwort eingeben.", "Hinweis",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+                SessionKey.Set(pwBox.Text);
+            };
+
+            Controls.AddRange(new Control[] {
+                title, sub, lblPw, pwBox, btnOk, btnCancel, lblHint
+            });
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+
+            // Passwort-Feld fokussieren
+            Shown += (s, e) => pwBox.Focus();
+        }
+    }
+
+    // =========================================================
+    // === CREDENTIAL-PASSWORT-DIALOG ===
+    // Erscheint NUR wenn auf gespeicherte Zugangsdaten
+    // zugegriffen wird — nicht beim Programmstart.
+    // =========================================================
+    public class CredentialPasswordDialog : Form
+    {
+        public string EnteredPassword { get; private set; }
+
+        public CredentialPasswordDialog()
+        {
+            Text = "Zugangsdaten entsperren";
+            Size = new Size(380, 190);
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            Font = new Font("Segoe UI", 10);
+
+            var icon = new Label
+            {
+                Text = "🔒",
+                Location = new Point(16, 18),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 18)
+            };
+            var lblInfo = new Label
+            {
+                Text = "Passwort zum Entschlüsseln der gespeicherten Zugangsdaten:",
+                Location = new Point(56, 14),
+                Size = new Size(290, 40),
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.DarkSlateGray
+            };
+
+            var pwBox = new TextBox
+            {
+                Location = new Point(56, 60),
+                Width = 280,
+                UseSystemPasswordChar = true,
+                Font = new Font("Segoe UI", 11)
+            };
+
+            var btnOk = new Button
+            {
+                Text = "Entsperren",
+                Location = new Point(56, 96),
+                Width = 130,
+                Height = 28,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                DialogResult = DialogResult.OK
+            };
+            var btnCancel = new Button
+            {
+                Text = "Abbrechen",
+                Location = new Point(196, 96),
+                Width = 100,
+                Height = 28,
+                DialogResult = DialogResult.Cancel
+            };
+
+            btnOk.Click += (s, e) =>
+            {
+                if (string.IsNullOrEmpty(pwBox.Text))
+                {
+                    MessageBox.Show("Bitte Passwort eingeben.", "Hinweis",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+
+                // Passwort gegen Verifikationsdatei prüfen
+                if (!CredentialStore.VerifyPassword(pwBox.Text))
+                {
+                    MessageBox.Show("Falsches Passwort.", "Fehler",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    pwBox.Clear();
+                    pwBox.Focus();
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+
+                EnteredPassword = pwBox.Text;
+            };
+
+            Controls.AddRange(new Control[] { icon, lblInfo, pwBox, btnOk, btnCancel });
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+            Shown += (s, e) => pwBox.Focus();
+        }
+    }
+
+
 }
