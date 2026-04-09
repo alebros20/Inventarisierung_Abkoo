@@ -13,7 +13,7 @@ namespace NmapInventory
         // === UI COMPONENTS ===
         private TabControl tabControl;
         private TextBox networkTextBox;
-        private Button scanButton, remoteHardwareButton, exportButton;
+        private Button scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton;
         private Label statusLabel;
         private ProgressBar scanProgressBar;
         private System.Windows.Forms.Timer scanAnimTimer;
@@ -27,6 +27,11 @@ namespace NmapInventory
         private DatabaseManager dbManager;
         private HardwareManager hardwareManager;
         private SoftwareManager softwareManager;
+        private LinuxManager linuxManager;
+        private AdbManager adbManager;
+        private IosManager iosManager;
+        private SnmpManager snmpManager;
+        private SnmpSettings snmpSettings = new SnmpSettings();
 
         // === DATA ===
         private List<DeviceInfo> currentDevices = new List<DeviceInfo>();
@@ -36,80 +41,29 @@ namespace NmapInventory
         private int selectedLocationID = -1;
         private string currentDisplayedIP = "";  // aktuell im Detail-Panel angezeigte IP
 
-        //################# Docking-Mechanismus für Geräte-Details Panel #################
-
-        private Control originalDevicePanelParent = null;
-        private Form floatingDeviceForm = null;
-        private Panel deviceDetailPanelRef = null;
-
-        private void UndockDevicePanel()
-        {
-            if (floatingDeviceForm != null) return;
-
-            var panel = Controls.Find("deviceDetailPanel", true).FirstOrDefault() as Panel;
-            if (panel == null) return;
-
-            deviceDetailPanelRef = panel;
-            originalDevicePanelParent = panel.Parent;
-
-            // Button ausblenden
-            var dockBtn = panel.Controls.Find("dockButton", true).FirstOrDefault() as Button;
-            if (dockBtn != null) dockBtn.Visible = false;
-
-            originalDevicePanelParent.Controls.Remove(panel);
-
-            floatingDeviceForm = new Form
-            {
-                Text = "Geräte-Details",
-                Size = new Size(panel.Width + 20, panel.Height + 40),
-                StartPosition = FormStartPosition.CenterParent
-            };
-
-            panel.Dock = DockStyle.Fill;
-            floatingDeviceForm.Controls.Add(panel);
-
-            floatingDeviceForm.FormClosing += (s, e) =>
-            {
-                e.Cancel = false;
-                DockDevicePanel();
-            };
-
-            floatingDeviceForm.Show();
-        }
-
-
-        private void DockDevicePanel()
-        {
-            if (floatingDeviceForm == null || deviceDetailPanelRef == null || originalDevicePanelParent == null)
-                return;
-
-            floatingDeviceForm.Controls.Remove(deviceDetailPanelRef);
-            originalDevicePanelParent.Controls.Add(deviceDetailPanelRef);
-
-            // Button wieder einblenden
-            var dockBtn = deviceDetailPanelRef.Controls.Find("dockButton", true).FirstOrDefault() as Button;
-            if (dockBtn != null) dockBtn.Visible = true;
-
-            deviceDetailPanelRef.Dock = DockStyle.None;
-            deviceDetailPanelRef.Location = new Point(0, 500);
-
-            floatingDeviceForm.Close();
-
-            floatingDeviceForm = null;
-            deviceDetailPanelRef = null;
-            originalDevicePanelParent = null;
-        }
-
-        //################# Docking-Mechanismus für Geräte-Details Panel #################
         public MainForm()
         {
             nmapScanner = new NmapScanner();
+            if (!nmapScanner.IsNmapAvailable)
+                MessageBox.Show(
+                    "Nmap wurde nicht gefunden!\n\n" +
+                    "Bitte eine der folgenden Optionen wählen:\n" +
+                    "  1. nmap.exe in denselben Ordner wie NmapInventory.exe kopieren\n" +
+                    "  2. Nmap installieren: https://nmap.org/download.html\n\n" +
+                    "Der Scan-Button wird nicht funktionieren bis Nmap verfügbar ist.",
+                    "Nmap nicht gefunden",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
             dbManager = new DatabaseManager();
             hardwareManager = new HardwareManager();
             softwareManager = new SoftwareManager();
+            snmpManager     = new SnmpManager();
+            linuxManager    = new LinuxManager();
+            adbManager      = new AdbManager();
+            iosManager      = new IosManager();
 
             InitializeComponent();
             dbManager.InitializeDatabase();
+            dbManager.RefreshInventarTables();
             LoadCustomerTree();
             ApplyAutoSizing();
 
@@ -201,7 +155,15 @@ namespace NmapInventory
             SetButtonIcon(exportButton, "Exportieren", 162);  // imageres: Speichern/Export
             exportButton.Click += (s, e) => ExportData();
 
-            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, remoteHardwareButton, exportButton });
+            snmpScanButton = new Button { Location = new Point(460, 42), Width = 165, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            snmpScanButton.Text = "📡 SNMP-Scan";
+            snmpScanButton.Click += (s, e) => StartSnmpScan();
+
+            snmpSettingsButton = new Button { Location = new Point(634, 42), Width = 150, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            snmpSettingsButton.Text = "⚙️ SNMP-Einstellungen";
+            snmpSettingsButton.Click += (s, e) => OpenSnmpSettings();
+
+            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton });
             return topPanel;
         }
 
@@ -305,11 +267,20 @@ namespace NmapInventory
             });
 
             deviceTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10), RowTemplate = { Height = 35 } };
-            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", Width = 50 });
-            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP", Width = 120 });
-            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hostname", Width = 200 });
-            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Online Status", Width = 100 });
-            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Offene Ports", Width = 600 });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status",        Width = 50  });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "IP",            Width = 120 });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hostname",      Width = 150 });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Gerätetyp",    Width = 130 });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hersteller",   Width = 130 });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "MAC-Adresse",  Width = 140 });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Kommentar",    Width = 200 });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Online Status", Width = 80  });
+            deviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Offene Ports", Width = 400 });
+            // Nur Kommentar-Spalte (Index 6) editierbar — alle anderen per CellBeginEdit sperren
+            deviceTable.CellBeginEdit += (s, e) =>
+            {
+                if (e.ColumnIndex != 6) e.Cancel = true;
+            };
             deviceTable.CellPainting += (s, e) =>
             {
                 if (e.ColumnIndex == 0 && e.RowIndex >= 0)
@@ -321,6 +292,61 @@ namespace NmapInventory
                         e.Graphics.FillEllipse(brush, e.CellBounds.Left + 15, e.CellBounds.Top + 10, 20, 20);
                     e.Handled = true;
                 }
+            };
+
+            // Kommentar-Spalte: Änderung direkt in DB speichern (Spalte 6)
+            deviceTable.CellEndEdit += (s, e) =>
+            {
+                if (e.ColumnIndex != 6 || e.RowIndex < 0) return;
+                string ip      = deviceTable.Rows[e.RowIndex].Cells[1].Value?.ToString();
+                string comment = deviceTable.Rows[e.RowIndex].Cells[6].Value?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(ip))
+                    dbManager.SaveComment(ip, comment);
+            };
+
+            // Rechtsklick auf Zeile → Gerätetyp manuell setzen
+            var ctxDeviceTable = new ContextMenuStrip();
+            deviceTable.MouseDown += (s, e) =>
+            {
+                if (e.Button != MouseButtons.Right) return;
+                var hit = deviceTable.HitTest(e.X, e.Y);
+                if (hit.RowIndex < 0) return;
+                deviceTable.Rows[hit.RowIndex].Selected = true;
+
+                ctxDeviceTable.Items.Clear();
+                string rowIp = deviceTable.Rows[hit.RowIndex].Cells[1].Value?.ToString();
+                if (string.IsNullOrEmpty(rowIp)) return;
+
+                ctxDeviceTable.Items.Add(new ToolStripLabel($"Gerätetyp setzen für {rowIp}") { Font = new Font("Segoe UI", 9, FontStyle.Bold), Enabled = false });
+                ctxDeviceTable.Items.Add(new ToolStripSeparator());
+
+                void AddType(string label, DeviceType dt)
+                {
+                    ctxDeviceTable.Items.Add(label, null, (_, __) =>
+                    {
+                        dbManager.SetDeviceType(rowIp, dt);
+                        LoadCustomerTree();
+                        // Zeile direkt aktualisieren
+                        string icon = $"{DeviceTypeHelper.GetIcon(dt)} {DeviceTypeHelper.GetLabel(dt)}";
+                        deviceTable.Rows[hit.RowIndex].Cells[3].Value = icon;
+                    });
+                }
+
+                AddType("🖥  Windows PC",      DeviceType.WindowsPC);
+                AddType("🗄  Windows Server",   DeviceType.WindowsServer);
+                AddType("💻 Laptop",            DeviceType.Laptop);
+                AddType("🐧 Linux",             DeviceType.Linux);
+                AddType("🍎 macOS / iOS",       DeviceType.MacOS);
+                AddType("📱 Smartphone",        DeviceType.Smartphone);
+                AddType("📟 Tablet",            DeviceType.Tablet);
+                AddType("🔀 Netzwerkgerät",     DeviceType.NetzwerkGeraet);
+                AddType("💾 NAS",               DeviceType.NAS);
+                AddType("📺 Smart TV",          DeviceType.SmartTV);
+                AddType("💡 IoT-Gerät",         DeviceType.IoT);
+                AddType("🖨  Drucker",           DeviceType.Drucker);
+                AddType("❓ Unbekannt",          DeviceType.Unbekannt);
+
+                ctxDeviceTable.Show(deviceTable, e.Location);
             };
 
             var container = new Panel { Dock = DockStyle.Fill };
@@ -390,7 +416,8 @@ namespace NmapInventory
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Hostname", Width = 150 });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "MAC", Width = 150 });
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", Width = 80 });
-            dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Offene Ports", Width = 400 });
+            dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Offene Ports", Width = 350 });
+            dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Gerätetyp", Width = 140, ReadOnly = true });
             var container = new Panel { Dock = DockStyle.Fill };
             container.Controls.Add(dbDeviceTable);
             container.Controls.Add(panel);
@@ -717,33 +744,13 @@ namespace NmapInventory
                 ForeColor = SystemColors.ControlText,
                 BackColor = SystemColors.Control
             };
-
             refreshDeviceBtn.Click += (s, e) =>
             {
                 if (!string.IsNullOrEmpty(currentDisplayedIP))
                     ShowDeviceDetails(currentDisplayedIP);
             };
-           // titleBar.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn });
+            titleBar.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn });
 
-            //######### dock/undock Button #########
-
-            var dockDeviceBtn = new Button
-            {
-                Text = "[]",
-                Location = new Point(400, 5),
-                Width = 26,
-                Height = 26,
-                Font = new Font("Segoe UI", 9),
-                FlatStyle = FlatStyle.Flat,
-                ForeColor = Color.White,
-                BackColor = Color.FromArgb(60, 110, 180)
-            };
-            dockDeviceBtn.FlatAppearance.BorderColor = Color.FromArgb(100, 150, 220);
-            dockDeviceBtn.Click += (s, e) => UndockDevicePanel();
-
-            titleBar.Controls.AddRange(new Control[] { deviceTitleLabel, refreshDeviceBtn, dockDeviceBtn });
-
-            //######## dock/undock Button #########
             // Info-Leiste: IP / MAC / Typ
             var deviceInfoLabel = new Label
             {
@@ -815,6 +822,18 @@ namespace NmapInventory
             };
             SetButtonIcon(scanHwSwBtn, "Hardware/SW abfragen", 109, "imageres.dll");
             scanHwSwBtn.Click += (s, e) => StartHwSwScanForDevice();
+
+            // Rechtsklick-Menü: Scan-Typ manuell erzwingen
+            var ctxScan = new ContextMenuStrip();
+            ctxScan.Items.Add("🖥  Windows (WMI)",  null, (s, e) => StartHwSwScanForDevice(DeviceType.WindowsPC));
+            ctxScan.Items.Add("🐧 Linux (SSH)",     null, (s, e) => StartHwSwScanForDevice(DeviceType.Linux));
+            ctxScan.Items.Add("📱 Android (ADB)",   null, (s, e) => StartHwSwScanForDevice(DeviceType.Smartphone));
+            ctxScan.Items.Add("🍎 iOS (USB)",       null, (s, e) => StartHwSwScanForDevice(DeviceType.MacOS));
+            scanHwSwBtn.MouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                    ctxScan.Show(scanHwSwBtn, e.Location);
+            };
 
             var scanHwSwStatus = new Label
             {
@@ -1060,8 +1079,64 @@ namespace NmapInventory
             quickGrid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
             btnQ.Click += (s, e) => RunQuickSearch(txtQ.Text, quickGrid, overviewLabel);
             txtQ.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) RunQuickSearch(txtQ.Text, quickGrid, overviewLabel); };
-            tab.Controls.Add(quickGrid); tab.Controls.Add(quickPanel); tab.Controls.Add(overviewLabel); tab.Controls.Add(btnOeffnen); tab.Controls.Add(infoLabel);
-            tab.Enter += (s, e) => LoadAuswertungOverview(overviewLabel);
+            // ── DB-Pfade für LibreOffice ──────────────────────
+            string appData = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Inventarisierung");
+
+            var dbInfoPanel = new Panel { Dock = DockStyle.Top, Height = 110, Padding = new Padding(6, 4, 6, 4) };
+
+            var lblDbHeader = new Label
+            {
+                Text = "Datenbankpfade für LibreOffice (Doppelklick = Pfad kopieren):",
+                Left = 6, Top = 4, AutoSize = true,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+
+            var dbListBox = new ListBox
+            {
+                Left = 6, Top = 22, Width = 860, Height = 80,
+                Font = new Font("Consolas", 9),
+                ScrollAlwaysVisible = false
+            };
+
+            void RefreshDbList()
+            {
+                dbListBox.Items.Clear();
+                // Haupt-DB
+                string mainDb = dbManager.GetMainDatabasePath();
+                dbListBox.Items.Add($"[Haupt-DB]   {mainDb}");
+                // Kunden-DBs
+                foreach (var k in dbManager.GetCustomers())
+                {
+                    string path = dbManager.GetCustomerDatabasePath(k.ID);
+                    if (System.IO.File.Exists(path))
+                        dbListBox.Items.Add($"[{k.Name}]  {path}");
+                }
+            }
+
+            dbListBox.DoubleClick += (s, e) =>
+            {
+                if (dbListBox.SelectedItem == null) return;
+                string line = dbListBox.SelectedItem.ToString();
+                // Pfad ist alles nach dem ersten "]  "
+                int idx = line.IndexOf(']');
+                string path = idx >= 0 ? line.Substring(idx + 1).Trim() : line;
+                Clipboard.SetText(path);
+                statusLabel.Text = $"Pfad kopiert: {path}";
+            };
+
+            tab.Enter += (s, e) => RefreshDbList();
+
+            dbInfoPanel.Controls.Add(lblDbHeader);
+            dbInfoPanel.Controls.Add(dbListBox);
+
+            tab.Controls.Add(quickGrid);
+            tab.Controls.Add(quickPanel);
+            tab.Controls.Add(overviewLabel);
+            tab.Controls.Add(dbInfoPanel);
+            tab.Controls.Add(btnOeffnen);
+            tab.Controls.Add(infoLabel);
+            tab.Enter += (s, e) => { LoadAuswertungOverview(overviewLabel); RefreshDbList(); };
             return tab;
         }
 
@@ -1129,6 +1204,7 @@ namespace NmapInventory
                         currentDevices = result.Devices;
                         dbManager.SaveDevices(currentDevices);
                         SyncDevicesToLocation(selectedLocationID, currentDevices);
+                        dbManager.RefreshInventarTables();
                         DisplayDevicesWithStatus(currentDevices, oldDevices);
                         LoadDatabaseDevices();
 
@@ -1183,65 +1259,150 @@ namespace NmapInventory
             var location = dbManager.GetLocationByID(locationID);
             if (location == null) { statusLabel.Text = "Fehler: Standort nicht gefunden!"; return; }
 
-            // Bereits zugewiesene IPs dieser Location
+            // IPs die bereits dieser Location zugewiesen sind
             var assignedIPs = new HashSet<string>(
                 dbManager.GetIPsWithWorkstationByLocation(locationID).Select(x => x.IPAddress));
 
-            // Alle MACs die bereits irgendwo in der DB als Gerät existieren
-            var knownMACs = new HashSet<string>(
-                dbManager.LoadDevices("Alle")
-                    .Where(d => !string.IsNullOrEmpty(d.MacAddress))
-                    .Select(d => d.MacAddress));
+            // MACs die bereits in dieser Location vorhanden sind (verhindert Doppelaufnahme bei IP-Wechsel)
+            var assignedMACs = new HashSet<string>(
+                dbManager.GetIPsWithWorkstationByLocation(locationID)
+                    .Select(x => x.IPAddress)
+                    .SelectMany(ip => dbManager.LoadDevices("Alle")
+                        .Where(d => d.IP == ip && !string.IsNullOrEmpty(d.MacAddress))
+                        .Select(d => d.MacAddress)));
 
-            int added = 0, skippedIP = 0, skippedMAC = 0;
+            int added = 0, skipped = 0;
 
             foreach (var device in devices)
             {
-                // IP bereits dieser Location zugewiesen → überspringen
+                // IP bereits in dieser Location → nur LastSeen aktualisieren, nicht neu anlegen
                 if (assignedIPs.Contains(device.IP))
                 {
-                    skippedIP++;
+                    skipped++;
                     continue;
                 }
 
-                // MAC bereits bekannt → Gerät existiert schon unter anderer/gleicher IP
-                // Nur LastSeen wurde bereits via SaveDevices aktualisiert
-                if (!string.IsNullOrEmpty(device.MacAddress) && knownMACs.Contains(device.MacAddress))
+                // MAC bereits in dieser Location (Gerät hat nur IP gewechselt) → überspringen
+                if (!string.IsNullOrEmpty(device.MacAddress) && assignedMACs.Contains(device.MacAddress))
                 {
-                    // IP trotzdem zur Location hinzufügen falls das Gerät umgezogen ist (neue IP)
-                    dbManager.AddIPToLocation(locationID, device.IP, device.Hostname ?? "");
-                    // Auch in der Kunden-spezifischen DB speichern
-                    try { dbManager.SyncDeviceToCustomerDb(device, location.CustomerID); } catch { }
-                    added++;
-                    skippedMAC++;
+                    skipped++;
                     continue;
                 }
 
+                // Wirklich neues Gerät → aufnehmen
                 dbManager.AddIPToLocation(locationID, device.IP, device.Hostname ?? "");
-                // Zusätzlich in der Kunden-spezifischen DB speichern
                 try { dbManager.SyncDeviceToCustomerDb(device, location.CustomerID); } catch { }
                 added++;
             }
 
-            var msg = $"{added} Geräte zu '{location.Name}' synchronisiert";
-            if (skippedIP > 0) msg += $", {skippedIP} bereits vorhanden";
-            if (skippedMAC > 0) msg += $", {skippedMAC} per MAC-Adresse erkannt";
-            statusLabel.Text = msg;
+            statusLabel.Text = added > 0
+                ? $"{added} neue Geräte zu '{location.Name}' hinzugefügt, {skipped} bereits vorhanden"
+                : $"Alle {skipped} Geräte bereits in '{location.Name}' vorhanden";
+        }
+
+        /// Bereinigt Hostnamen die noch im alten "Vendor (MAC)" oder reinen MAC-Format gespeichert sind.
+        /// Gibt einen leeren String zurück wenn kein echter Name vorhanden → Anzeige zeigt "-"
+        /// Extrahiert "Hersteller : XYZ" aus HW-Info-Text (WMI/Linux/ADB).
+        /// Gibt null zurück wenn nichts gefunden.
+        private static string ExtractVendorFromHwInfo(string hwInfo)
+        {
+            if (string.IsNullOrEmpty(hwInfo)) return null;
+            foreach (var line in hwInfo.Split('\n'))
+            {
+                var t = line.Trim();
+                // WMI:   "Hersteller       : Dell Inc."
+                // Linux: "  Hersteller : LENOVO"
+                if (t.StartsWith("Hersteller") && t.Contains(":"))
+                {
+                    var val = t.Substring(t.IndexOf(':') + 1).Trim();
+                    if (!string.IsNullOrEmpty(val) &&
+                        val != "To Be Filled By O.E.M." &&
+                        val != "Default string" &&
+                        val.Length > 1)
+                        return val;
+                }
+            }
+            return null;
+        }
+
+        private static string CleanHostname(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            // Muster: "Vendor (AA:BB:CC:DD:EE:FF)" → ""  (Vendor kommt separat als Gerätetyp)
+            if (System.Text.RegularExpressions.Regex.IsMatch(raw,
+                @"^.+\s+\([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}\)$")) return "";
+            // Reines MAC-Format → ""
+            if (System.Text.RegularExpressions.Regex.IsMatch(raw,
+                @"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")) return "";
+            // IP-Adresse als Hostname → ""
+            if (System.Text.RegularExpressions.Regex.IsMatch(raw,
+                @"^\d{1,3}(\.\d{1,3}){3}$")) return "";
+            return raw;
         }
 
         private void DisplayDevicesWithStatus(List<DeviceInfo> currentDevices, List<DeviceInfo> previousDevices)
         {
             deviceTable.Rows.Clear();
-            var displayed = new HashSet<string>();
+            var displayed   = new HashSet<string>();
             var locationIPs = dbManager.GetIPsWithWorkstationByLocation(selectedLocationID);
-            var lastScanIPs = new HashSet<string>(dbManager.LoadDevices("Alle").Where(d => locationIPs.Any(l => l.IPAddress == d.IP)).GroupBy(d => d.IP).Select(g => g.First().IP));
-            var currentIPs = new HashSet<string>(currentDevices.Select(d => d.IP));
+
+            // Einmal laden und für beide Zwecke verwenden
+            var dbDevices   = dbManager.LoadDevices("Alle")
+                                       .Where(d => locationIPs.Any(l => l.IPAddress == d.IP))
+                                       .GroupBy(d => d.IP)
+                                       .Select(g => g.First())
+                                       .ToList();
+
+            var lastScanIPs = new HashSet<string>(dbDevices.Select(d => d.IP));
+
+            // Manuell vergebene Hostnamen: IP → Name aus DB
+            var dbHostnames = dbDevices
+                .Where(d => !string.IsNullOrEmpty(d.Hostname))
+                .ToDictionary(d => d.IP, d => d.Hostname);
+
+            // Gespeicherter Gerätetyp: IP → DeviceType aus DB
+            var dbTypes = dbDevices
+                .Where(d => d.DeviceType != DeviceType.Unbekannt)
+                .ToDictionary(d => d.IP, d => d.DeviceType);
+
+            // Vendor und Kommentar aus DB
+            var dbVendors   = dbDevices.Where(d => !string.IsNullOrEmpty(d.Vendor))
+                                       .ToDictionary(d => d.IP, d => d.Vendor);
+            var dbComments  = dbDevices.ToDictionary(d => d.IP, d => d.Comment ?? "");
+
+            var currentIPs  = new HashSet<string>(currentDevices.Select(d => d.IP));
+
             foreach (var dev in currentDevices)
                 if (displayed.Add(dev.IP))
-                    deviceTable.Rows.Add(lastScanIPs.Contains(dev.IP) ? "AKTIV" : "NEU", dev.IP, dev.Hostname, dev.Status, dev.Ports);
-            foreach (var last in dbManager.LoadDevices("Alle").Where(d => locationIPs.Any(l => l.IPAddress == d.IP)).GroupBy(d => d.IP).Select(g => g.First()))
+                {
+                    string raw      = dbHostnames.TryGetValue(dev.IP, out string dbName) && !string.IsNullOrEmpty(dbName)
+                                      ? dbName : dev.Hostname;
+                    string hostname = CleanHostname(raw);
+                    var dt          = dbTypes.TryGetValue(dev.IP, out DeviceType dbDt) ? dbDt : dev.DeviceType;
+                    string vendor   = dbVendors.TryGetValue(dev.IP, out string dbVendor) && !string.IsNullOrEmpty(dbVendor)
+                                      ? dbVendor : (dev.Vendor ?? "");
+                    string comment  = dbComments.TryGetValue(dev.IP, out string c) ? c : "";
+                    string mac      = !string.IsNullOrEmpty(dev.MacAddress) ? dev.MacAddress
+                                      : dbDevices.FirstOrDefault(d => d.IP == dev.IP)?.MacAddress ?? "";
+                    deviceTable.Rows.Add(
+                        lastScanIPs.Contains(dev.IP) ? "AKTIV" : "NEU",
+                        dev.IP,
+                        string.IsNullOrEmpty(hostname) ? "-" : hostname,
+                        $"{DeviceTypeHelper.GetIcon(dt)} {DeviceTypeHelper.GetLabel(dt)}",
+                        vendor, mac, comment, dev.Status, dev.Ports);
+                }
+
+            foreach (var last in dbDevices)
                 if (!currentIPs.Contains(last.IP) && displayed.Add(last.IP))
-                    deviceTable.Rows.Add("OFFLINE", last.IP, last.Hostname ?? "", "Down", "-");
+                {
+                    string hostname = CleanHostname(last.Hostname ?? "");
+                    deviceTable.Rows.Add(
+                        "OFFLINE",
+                        last.IP,
+                        string.IsNullOrEmpty(hostname) ? "-" : hostname,
+                        $"{DeviceTypeHelper.GetIcon(last.DeviceType)} {DeviceTypeHelper.GetLabel(last.DeviceType)}",
+                        last.Vendor ?? "", last.MacAddress ?? "", last.Comment ?? "", "Down", "-");
+                }
         }
 
         // =========================================================
@@ -1331,7 +1492,7 @@ namespace NmapInventory
         /// Lokal wenn IP = eigene IP, sonst Remote mit Anmeldedialog.
         /// Ergebnis wird in DB dem Gerät zugeordnet und im Detail-Panel angezeigt.
         /// </summary>
-        private void StartHwSwScanForDevice()
+        private void StartHwSwScanForDevice(DeviceType? forceType = null)
         {
             if (string.IsNullOrEmpty(currentDisplayedIP))
             {
@@ -1364,11 +1525,14 @@ namespace NmapInventory
 
                     // Auch Hostname in Devices aktualisieren
                     var device = dbManager.LoadDevices("Alle").FirstOrDefault(d => d.IP == ip);
+
                     if (device != null)
                     {
                         var hwInfo = $"=== Lokal abgefragt: {DateTime.Now:dd.MM.yyyy HH:mm} ===\n{hw}";
                         dbManager.SaveHardwareInfo(ip, hwInfo);
                     }
+                    dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
+                    dbManager.RefreshInventarTables();
 
                     Invoke(new MethodInvoker(() =>
                     {
@@ -1385,57 +1549,249 @@ namespace NmapInventory
             }
             else
             {
-                // Remote — Anmeldedaten abfragen
-                using (var form = new RemoteConnectionForm(dbManager))
+                // Gerätetyp: manuell erzwungen oder automatisch aus DB
+                var knownDevice = dbManager.LoadDevices("Alle").FirstOrDefault(d => d.IP == ip);
+                var deviceType  = forceType ?? knownDevice?.DeviceType ?? DeviceType.Unbekannt;
+
+                // iOS wird als MacOS-Override signalisiert (Rechtsklick-Menü)
+                bool forcediOS = forceType == DeviceType.MacOS;
+                bool isLinux   = deviceType == DeviceType.Linux;
+                bool isAndroid = deviceType == DeviceType.Smartphone && !forcediOS && !IsAppleDevice(knownDevice);
+                bool isApple   = forcediOS || (IsAppleDevice(knownDevice) && deviceType == DeviceType.Smartphone);
+
+                // ── Linux via SSH ─────────────────────────────
+                if (isLinux)
                 {
-                    form.SetIP(ip); // IP vorausfüllen
-                    if (form.ShowDialog(this) != DialogResult.OK)
+                    using (var form = new LinuxSshConnectionForm())
+                    {
+                        form.SetIP(ip);
+                        if (form.ShowDialog(this) != DialogResult.OK)
+                        { if (scanBtn != null) scanBtn.Enabled = true; if (scanStatus != null) scanStatus.Text = ""; return; }
+
+                        string sshHost = form.Host; string sshUser = form.Username;
+                        string sshPass = form.Password; string sshKey = form.KeyFilePath;
+                        int    sshPort = form.Port;
+
+                        System.Threading.Tasks.Task.Run(() =>
+                        {
+                            try
+                            {
+                                string hw = linuxManager.GetHardwareInfo(sshHost, sshUser, sshPass, sshKey, sshPort);
+                                var sw    = linuxManager.GetInstalledSoftware(sshHost, sshUser, sshPass, sshKey, sshPort);
+                                foreach (var s in sw) s.PCName = ip;
+                                dbManager.SaveHardwareInfo(ip, hw);
+                                dbManager.SaveSoftware(sw);
+                                dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
+                                dbManager.RefreshInventarTables();
+                                Invoke(new MethodInvoker(() =>
+                                {
+                                    hardwareInfoTextBox.Text = hw; DisplaySoftwareGrid(sw, ip);
+                                    ShowDeviceDetails(ip);
+                                    if (scanBtn != null) scanBtn.Enabled = true;
+                                    if (scanStatus != null) scanStatus.Text = $"✅ Linux SSH: {DateTime.Now:HH:mm}";
+                                    statusLabel.Text = $"Linux-Abfrage für {ip} gespeichert";
+                                }));
+                            }
+                            catch (Exception ex)
+                            {
+                                Invoke(new MethodInvoker(() =>
+                                {
+                                    MessageBox.Show($"SSH-Fehler: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    if (scanBtn != null) scanBtn.Enabled = true;
+                                    if (scanStatus != null) scanStatus.Text = "❌ Fehler";
+                                }));
+                            }
+                        });
+                    }
+                }
+                // ── Android via ADB ───────────────────────────
+                else if (isAndroid || deviceType == DeviceType.Smartphone)
+                {
+                    if (!adbManager.IsAdbAvailable)
+                    {
+                        MessageBox.Show(
+                            "ADB (Android Debug Bridge) wurde nicht gefunden.\n\n" +
+                            "Bitte Android Platform Tools installieren:\n" +
+                            "https://developer.android.com/tools/releases/platform-tools\n\n" +
+                            "Dann adb.exe in denselben Ordner wie Inventarisierung.exe kopieren.",
+                            "ADB nicht gefunden", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        if (scanBtn != null) scanBtn.Enabled = true;
+                        if (scanStatus != null) scanStatus.Text = "";
+                        return;
+                    }
+
+                    // Dialog: IP und Port vom Nutzer bestätigen lassen (Android 11+ hat anderen Port)
+                    var adbDlg = new AdbConnectionDialog(ip);
+                    if (adbDlg.ShowDialog(this) != System.Windows.Forms.DialogResult.OK)
                     {
                         if (scanBtn != null) scanBtn.Enabled = true;
                         if (scanStatus != null) scanStatus.Text = "";
                         return;
                     }
 
-                    string username = form.Username;
-                    string password = form.Password;
+                    string ipPort = adbDlg.IpPort;
+                    bool doPair   = adbDlg.DoPairing;
+                    string pairIp = $"{ip}:{adbDlg.PairPort}";
+                    string pairCode = adbDlg.PairCode;
+
+                    if (scanStatus != null) scanStatus.Text = $"Verbinde mit {ipPort}...";
 
                     System.Threading.Tasks.Task.Run(() =>
                     {
                         try
                         {
-                            string hw = hardwareManager.GetRemoteHardwareInfo(ip, username, password);
-                            var sw = softwareManager.GetRemoteSoftware(ip, username, password);
-                            string pcName = ip;
-                            foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
-                            dbManager.CheckForUpdates(sw, pcName);
-                            dbManager.SaveSoftware(sw);
-                            dbManager.SaveHardwareInfo(ip, $"=== Remote abgefragt: {DateTime.Now:dd.MM.yyyy HH:mm} ===\n{hw}");
+                            // Ggf. erst koppeln (einmalig für Android 11+)
+                            if (doPair)
+                            {
+                                string pairResult = adbManager.PairDevice(pairIp, pairCode);
+                                Invoke(new MethodInvoker(() =>
+                                    MessageBox.Show(pairResult, "Kopplung", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+                            }
 
+                            string hw = adbManager.GetDeviceInfo(ipPort);
+                            var sw    = adbManager.GetInstalledApps(ipPort);
+                            foreach (var s in sw) s.PCName = ip;
+                            dbManager.SaveHardwareInfo(ip, hw);
+                            dbManager.SaveSoftware(sw);
+                            dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
+
+                            // Gerätenamen (z.B. "Samsung Galaxy A54") automatisch als Hostname setzen,
+                            // aber nur wenn noch kein manueller Name vergeben wurde
+                            string adbName = AdbManager.ExtractAdbDeviceName(hw);
+                            if (!string.IsNullOrEmpty(adbName))
+                                dbManager.SetHostnameIfEmpty(ip, adbName);
+
+                            dbManager.RefreshInventarTables();
                             Invoke(new MethodInvoker(() =>
                             {
-                                hardwareInfoTextBox.Text = hw;
-                                DisplaySoftwareGrid(sw, ip);
-                                UpdateHardwareLabels(ip, true);
+                                hardwareInfoTextBox.Text = hw; DisplaySoftwareGrid(sw, ip);
                                 ShowDeviceDetails(ip);
+                                LoadCustomerTree();
                                 if (scanBtn != null) scanBtn.Enabled = true;
-                                if (scanStatus != null) scanStatus.Text = $"✅ Remote abgefragt: {DateTime.Now:HH:mm}";
-                                statusLabel.Text = $"Hardware/Software für {ip} gespeichert";
+                                if (scanStatus != null) scanStatus.Text = $"✅ Android ADB: {DateTime.Now:HH:mm}";
+                                statusLabel.Text = $"Android-Abfrage für {ip} gespeichert";
                             }));
                         }
                         catch (Exception ex)
                         {
                             Invoke(new MethodInvoker(() =>
                             {
-                                MessageBox.Show($"Fehler: {ex.Message}", "Fehler",
-                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                MessageBox.Show($"ADB-Fehler:\n\n{ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
                                 if (scanBtn != null) scanBtn.Enabled = true;
                                 if (scanStatus != null) scanStatus.Text = "❌ Fehler";
                             }));
                         }
                     });
                 }
+                // ── iOS via USB ───────────────────────────────
+                else if (isApple && deviceType == DeviceType.Smartphone)
+                {
+                    if (!iosManager.IsAvailable)
+                    {
+                        MessageBox.Show(
+                            "libimobiledevice wurde nicht gefunden.\n\n" +
+                            "Bitte ideviceinfo.exe herunterladen und neben Inventarisierung.exe ablegen:\n" +
+                            "https://github.com/libimobiledevice-win32/imobiledevice-net/releases\n\n" +
+                            "Außerdem: iPhone per USB anschließen und 'Vertrauen' antippen.",
+                            "libimobiledevice nicht gefunden", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        if (scanBtn != null) scanBtn.Enabled = true;
+                        if (scanStatus != null) scanStatus.Text = "";
+                        return;
+                    }
+
+                    if (scanStatus != null) scanStatus.Text = "iOS-Abfrage via USB...";
+
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try
+                        {
+                            string hw = iosManager.GetDeviceInfo();
+                            var sw    = new List<SoftwareInfo> { new SoftwareInfo
+                                { Name = "iOS: Softwareliste nicht verfügbar (kein Jailbreak)", Source = "iOS", PCName = ip } };
+                            dbManager.SaveHardwareInfo(ip, hw);
+                            dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
+                            dbManager.RefreshInventarTables();
+                            Invoke(new MethodInvoker(() =>
+                            {
+                                hardwareInfoTextBox.Text = hw; DisplaySoftwareGrid(sw, ip);
+                                ShowDeviceDetails(ip);
+                                if (scanBtn != null) scanBtn.Enabled = true;
+                                if (scanStatus != null) scanStatus.Text = $"✅ iOS: {DateTime.Now:HH:mm}";
+                                statusLabel.Text = $"iOS-Abfrage gespeichert";
+                            }));
+                        }
+                        catch (Exception ex)
+                        {
+                            Invoke(new MethodInvoker(() =>
+                            {
+                                MessageBox.Show($"iOS-Fehler: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                if (scanBtn != null) scanBtn.Enabled = true;
+                                if (scanStatus != null) scanStatus.Text = "❌ Fehler";
+                            }));
+                        }
+                    });
+                }
+                // ── Windows WMI (Standard) ────────────────────
+                else
+                {
+                    using (var form = new RemoteConnectionForm(dbManager))
+                    {
+                        form.SetIP(ip);
+                        if (form.ShowDialog(this) != DialogResult.OK)
+                        { if (scanBtn != null) scanBtn.Enabled = true; if (scanStatus != null) scanStatus.Text = ""; return; }
+
+                        string username = form.Username;
+                        string password = form.Password;
+
+                        System.Threading.Tasks.Task.Run(() =>
+                        {
+                            try
+                            {
+                                string hw = hardwareManager.GetRemoteHardwareInfo(ip, username, password);
+                                var sw    = softwareManager.GetRemoteSoftware(ip, username, password);
+                                string pcName = ip;
+                                foreach (var s in sw) { s.PCName = pcName; s.Timestamp = DateTime.Now; }
+                                dbManager.CheckForUpdates(sw, pcName);
+                                dbManager.SaveSoftware(sw);
+                                dbManager.SaveHardwareInfo(ip, $"=== Remote abgefragt: {DateTime.Now:dd.MM.yyyy HH:mm} ===\n{hw}");
+                                dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
+                                dbManager.RefreshInventarTables();
+
+                                Invoke(new MethodInvoker(() =>
+                                {
+                                    hardwareInfoTextBox.Text = hw; DisplaySoftwareGrid(sw, ip);
+                                    UpdateHardwareLabels(ip, true); ShowDeviceDetails(ip);
+                                    if (scanBtn != null) scanBtn.Enabled = true;
+                                    if (scanStatus != null) scanStatus.Text = $"✅ Remote abgefragt: {DateTime.Now:HH:mm}";
+                                    statusLabel.Text = $"Hardware/Software für {ip} gespeichert";
+                                }));
+                            }
+                            catch (Exception ex)
+                            {
+                                Invoke(new MethodInvoker(() =>
+                                {
+                                    MessageBox.Show($"Fehler: {ex.Message}", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    if (scanBtn != null) scanBtn.Enabled = true;
+                                    if (scanStatus != null) scanStatus.Text = "❌ Fehler";
+                                }));
+                            }
+                        });
+                    }
+                }
             }
         }
+
+        private static bool IsAppleDevice(DatabaseDevice d)
+        {
+            if (d == null) return false;
+            string vendor = (d.MacAddress ?? "").ToLower();
+            string host   = (d.Hostname ?? "").ToLower();
+            return host.Contains("iphone") || host.Contains("ipad") ||
+                   vendor.Contains("apple");
+        }
+
+        private static bool IsAppleVendor(DatabaseDevice d)
+            => d != null && (d.Hostname ?? "").ToLower().Contains("apple");
 
         private bool IsLocalIP(string ip)
         {
@@ -1478,7 +1834,8 @@ namespace NmapInventory
             var displayed = new HashSet<string>();
             foreach (var dev in dbManager.LoadDevices(filter))
                 if (displayed.Add(dev.IP))
-                    dbDeviceTable.Rows.Add(dev.ID, dev.Zeitstempel, dev.IP, dev.Hostname, dev.MacAddress ?? "", dev.Status, dev.Ports);
+                    dbDeviceTable.Rows.Add(dev.ID, dev.Zeitstempel, dev.IP, dev.Hostname, dev.MacAddress ?? "", dev.Status, dev.Ports,
+                        $"{DeviceTypeHelper.GetIcon(dev.DeviceType)} {DeviceTypeHelper.GetLabel(dev.DeviceType)}");
         }
 
         private void LoadDatabaseSoftware(string filter = "Alle")
@@ -1581,52 +1938,40 @@ namespace NmapInventory
                 // Bevorzuge den in der Location eingetragenen Arbeitsplatznamen (selbst vergeben),
                 // falls vorhanden. Sonst Hostname aus Devices-Tabelle verwenden.
                 var device = allDevices?.FirstOrDefault(d => d.IP == ip.IPAddress);
-                string label = ip.WorkstationName ?? device?.Hostname ?? "";
+                string label = !string.IsNullOrEmpty(ip.WorkstationName) ? ip.WorkstationName
+                             : !string.IsNullOrEmpty(device?.Hostname)    ? device.Hostname
+                             : "";
 
-                // Gerätetyp ermitteln (aus letzter Nmap-Detail / Ports)
-                var nmapDetail = dbManager.GetLatestNmapDetail(ip.IPAddress);
-                var ports = dbManager.GetPortsByDevice(ip.IPAddress) ?? new List<NmapPort>();
-                var probe = new DeviceInfo
+                // MAC und Hersteller aus Device-DB (enthält WMI-Hersteller) oder NmapDetail
+                var nmapDetail  = dbManager.GetLatestNmapDetail(ip.IPAddress);
+                string mac      = device?.MacAddress ?? nmapDetail?.MacAddress ?? "";
+                string vendor   = !string.IsNullOrEmpty(device?.Vendor)      ? device.Vendor
+                                : !string.IsNullOrEmpty(nmapDetail?.Vendor)  ? nmapDetail.Vendor
+                                : OUIHelper.Lookup(mac) ?? "";
+
+                // Gerätetyp für Icon
+                var detectedType = device?.DeviceType ?? DeviceType.Unbekannt;
+                if (detectedType == DeviceType.Unbekannt)
                 {
-                    IP = ip.IPAddress,
-                    Hostname = label,
-                    Vendor = nmapDetail?.Vendor,
-                    OS = nmapDetail?.OS ?? nmapDetail?.OSDetails,
-                    OpenPorts = ports
-                };
-                var detectedType = DeviceTypeHelper.Detect(probe);
-                string typeIcon = DeviceTypeHelper.GetIcon(detectedType);
-                string typeLabel = DeviceTypeHelper.GetLabel(detectedType);
-
-                // MAC aus Device oder NmapDetail
-                string mac = device?.MacAddress ?? nmapDetail?.MacAddress ?? "";
-
-                // Hersteller: zuerst Nmap-Vendor, falls leer per OUI-Lookup versuchen
-                string vendorDisplay = nmapDetail?.Vendor;
-                if (!string.IsNullOrEmpty(vendorDisplay)) vendorDisplay = vendorDisplay.Trim();
-                else
-                {
-                    var oui = OUIHelper.Lookup(mac);
-                    if (!string.IsNullOrEmpty(oui)) vendorDisplay = oui;
+                    var ports = dbManager.GetPortsByDevice(ip.IPAddress) ?? new List<NmapPort>();
+                    detectedType = DeviceTypeHelper.Detect(new DeviceInfo
+                    {
+                        IP = ip.IPAddress, Hostname = label,
+                        Vendor = vendor, OS = nmapDetail?.OS ?? nmapDetail?.OSDetails,
+                        OpenPorts = ports
+                    });
                 }
+                string typeIcon = DeviceTypeHelper.GetIcon(detectedType);
 
-                // Format: Gerätename - (Gerätetyp) - MAC Adresse - Hersteller
-                string namePart = label;
-                // Wenn kein Gerätename vorhanden, als Fallback MAC oder Vendor oder IP verwenden
-                if (string.IsNullOrEmpty(namePart))
-                    namePart = !string.IsNullOrEmpty(mac) ? mac : (!string.IsNullOrEmpty(vendorDisplay) ? vendorDisplay : "");
+                // Format: Icon Name - IP - MAC - Hersteller
+                // Name: manuell gesetzt > DB-Hostname > "Unbekannt"
+                string name = !string.IsNullOrEmpty(label) ? label : "Unbekannt";
 
-                string typePart = !string.IsNullOrEmpty(typeLabel) ? $"({typeLabel})" : null;
-                string macPart = !string.IsNullOrEmpty(mac) ? mac : null;
-                string vendorPart = !string.IsNullOrEmpty(vendorDisplay) ? vendorDisplay : null;
+                var parts = new List<string> { $"{typeIcon} {name}", ip.IPAddress };
+                if (!string.IsNullOrEmpty(mac))    parts.Add(mac);
+                if (!string.IsNullOrEmpty(vendor)) parts.Add(vendor);
 
-                var parts = new List<string>();
-                if (!string.IsNullOrEmpty(namePart)) parts.Add(namePart);
-                if (!string.IsNullOrEmpty(typePart)) parts.Add(typePart);
-                if (!string.IsNullOrEmpty(macPart)) parts.Add(macPart);
-                if (!string.IsNullOrEmpty(vendorPart)) parts.Add(vendorPart);
-
-                string display = parts.Count > 0 ? string.Join(" - ", parts) : ip.IPAddress;
+                string display = string.Join(" - ", parts);
 
                 locationNode.Nodes.Add(new TreeNode(display)
                 {
@@ -1809,6 +2154,30 @@ namespace NmapInventory
                     hw.AppendLine($"  {entry.Item3:dd.MM.yyyy HH:mm}   {entry.Item1,-20}  {entry.Item2}");
             }
 
+            // SNMP-Daten (aus aktuellem Scan-Speicher — nicht persistiert)
+            var snmpDevice = currentDevices.FirstOrDefault(d => d.IP == ipAddress);
+            if (snmpDevice?.SnmpData != null)
+            {
+                hw.AppendLine();
+                if (snmpDevice.SnmpData.Success)
+                {
+                    string ver = snmpDevice.SnmpData.SnmpVersion ?? "?";
+                    hw.AppendLine($"=== SNMP-Informationen (SNMP {ver}) ===");
+                    hw.AppendLine($"  sysName     : {snmpDevice.SnmpData.SysName ?? "-"}");
+                    hw.AppendLine($"  sysDescr    : {snmpDevice.SnmpData.SysDescr ?? "-"}");
+                    hw.AppendLine($"  sysLocation : {snmpDevice.SnmpData.SysLocation ?? "-"}");
+                    hw.AppendLine($"  sysContact  : {snmpDevice.SnmpData.SysContact ?? "-"}");
+                    hw.AppendLine($"  sysUpTime   : {snmpDevice.SnmpData.SysUpTime ?? "-"}");
+                    hw.AppendLine($"  sysObjectID : {snmpDevice.SnmpData.SysObjectID ?? "-"}");
+                    hw.AppendLine($"  Abfragetime : {snmpDevice.SnmpData.QueryTime:dd.MM.yyyy HH:mm}");
+                }
+                else
+                {
+                    hw.AppendLine("=== SNMP — Keine Antwort ===");
+                    hw.AppendLine($"  Fehler: {snmpDevice.SnmpData.ErrorMessage}");
+                }
+            }
+
             hwBox.Text = hw.ToString();
 
             // ── Software ─────────────────────────────────────────
@@ -1837,6 +2206,54 @@ namespace NmapInventory
         {
             var devicePanel = FindControl<Panel>("deviceDetailPanel");
             if (devicePanel != null) devicePanel.Visible = false;
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // 📡 SNMP-SCAN — fragt alle aktuell bekannten Geräte ab
+        // ─────────────────────────────────────────────────────────
+        private void StartSnmpScan()
+        {
+            if (currentDevices.Count == 0)
+            {
+                MessageBox.Show("Bitte zuerst einen Netzwerk-Scan durchführen.", "Kein Scan vorhanden",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            snmpScanButton.Enabled = false;
+            string snmpVerLabel = snmpSettings.Version == 3 ? "v3" : snmpSettings.Version == 1 ? "v1" : "v2c";
+            BeginScanUI($"SNMP-Scan läuft ({snmpVerLabel}, Community: {snmpSettings.Community})...");
+
+            var devicesToQuery = currentDevices.ToList();
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                int success = 0;
+                snmpManager.QueryDevices(devicesToQuery, snmpSettings, msg =>
+                {
+                    Invoke(new MethodInvoker(() => statusLabel.Text = "⏳  " + msg));
+                });
+
+                foreach (var d in devicesToQuery)
+                    if (d.SnmpData?.Success == true) success++;
+
+                Invoke(new MethodInvoker(() =>
+                {
+                    EndScanUI($"✅ SNMP-Scan abgeschlossen — {success}/{devicesToQuery.Count} Geräte antworteten");
+                    snmpScanButton.Enabled = true;
+                    if (!string.IsNullOrEmpty(currentDisplayedIP))
+                        ShowDeviceDetails(currentDisplayedIP);
+                }));
+            });
+        }
+
+        private void OpenSnmpSettings()
+        {
+            using (var dlg = new SnmpSettingsDialog(snmpSettings))
+            {
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                    snmpSettings = dlg.Settings;
+            }
         }
 
         // =========================================================
@@ -2407,6 +2824,31 @@ namespace NmapInventory
         [STAThread]
         static void Main()
         {
+            // SQLite.Interop.dll aus eingebetteter Resource ins App-Verzeichnis extrahieren,
+            // damit es von System.Data.SQLite über den Standard-DLL-Suchpfad gefunden wird.
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string arch = Environment.Is64BitProcess ? "x64" : "x86";
+            string rootDll = Path.Combine(baseDir, "SQLite.Interop.dll");
+            string archDir = Path.Combine(baseDir, arch);
+            string archDll = Path.Combine(archDir, "SQLite.Interop.dll");
+            string resourceName = "SQLite.Interop." + arch + ".dll";
+            var asm = System.Reflection.Assembly.GetExecutingAssembly();
+            // In App-Root extrahieren (Standard-DLL-Suchpfad)
+            if (!File.Exists(rootDll))
+            {
+                using (var stream = asm.GetManifestResourceStream(resourceName))
+                using (var fs = File.Create(rootDll))
+                    stream.CopyTo(fs);
+            }
+            // Auch in arch-spezifischen Unterordner extrahieren (Fallback)
+            if (!File.Exists(archDll))
+            {
+                Directory.CreateDirectory(archDir);
+                using (var stream = asm.GetManifestResourceStream(resourceName))
+                using (var fs = File.Create(archDll))
+                    stream.CopyTo(fs);
+            }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm());

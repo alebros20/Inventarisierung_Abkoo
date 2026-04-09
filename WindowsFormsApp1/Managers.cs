@@ -1,17 +1,87 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Management;
+using System.Net;
 using System.Text.RegularExpressions;
+using Renci.SshNet;
 using System.Windows.Forms;
+using Lextm.SharpSnmpLib;
+using Lextm.SharpSnmpLib.Messaging;
+using Lextm.SharpSnmpLib.Security;
 using Microsoft.Win32;
 
 namespace NmapInventory
 {
     public class NmapScanner
     {
-        private string nmapPath = "nmap";
+        private readonly string nmapPath;
+
+        public NmapScanner()
+        {
+            nmapPath = FindNmap();
+        }
+
+        // Sucht nmap.exe in dieser Reihenfolge:
+        // 1. Neben der eigenen .exe (für ClickOnce / portable)
+        // 2. Standard-Installationspfade (32/64-bit)
+        // 3. PATH-Variable (falls nmap global installiert)
+        private static string FindNmap()
+        {
+            // 1. Neben der eigenen .exe
+            string appDir = AppDomain.CurrentDomain.BaseDirectory;
+            string local = Path.Combine(appDir, "nmap.exe");
+            if (File.Exists(local)) return local;
+
+            // Auch in einem nmap-Unterordner neben der .exe
+            string subDir = Path.Combine(appDir, "nmap", "nmap.exe");
+            if (File.Exists(subDir)) return subDir;
+
+            // 2. Typische Windows-Installationspfade
+            string[] candidates = {
+                @"C:\Program Files (x86)\Nmap\nmap.exe",
+                @"C:\Program Files\Nmap\nmap.exe",
+                Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.ProgramFilesX86), "Nmap", "nmap.exe"),
+                Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.ProgramFiles), "Nmap", "nmap.exe"),
+            };
+            foreach (var c in candidates)
+                if (File.Exists(c)) return c;
+
+            // 3. Fallback: PATH — Windows sucht selbst
+            return "nmap";
+        }
+
+        // Gibt den gefundenen Pfad zurück — für Diagnose im UI
+        public string NmapPath => nmapPath;
+        public bool IsNmapAvailable => nmapPath == "nmap"
+            ? IsInPath("nmap")
+            : File.Exists(nmapPath);
+
+        private static bool IsInPath(string exe)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "where",
+                    Arguments = exe,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    string output = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit();
+                    return !string.IsNullOrWhiteSpace(output);
+                }
+            }
+            catch { return false; }
+        }
 
         // ─────────────────────────────────────────────────────────
         // 🔍 DISCOVERY SCAN — ARP, schnell, findet ALLE Geräte + MACs
@@ -111,29 +181,15 @@ namespace NmapInventory
             void Flush()
             {
                 if (!isUp || string.IsNullOrEmpty(ip)) return;
-                string hostname;
-                if (!string.IsNullOrEmpty(vendor) && vendor != "Unknown")
-                    // Hersteller bekannt → "Arcadyan (78:DD:12:D2:10:3E)"
-                    hostname = !string.IsNullOrEmpty(mac) ? $"{vendor} ({mac})" : vendor;
-                else if (!string.IsNullOrEmpty(dnsName))
-                    // DNS-Name bekannt → "speedport.ip"
-                    hostname = dnsName;
-                else if (!string.IsNullOrEmpty(mac))
-                    // Nur MAC bekannt → MAC als Hostname
-                    hostname = mac;
-                else
-                    // Nichts bekannt → IP als letzter Fallback
-                    hostname = ip;
-
                 var dev = new DeviceInfo
                 {
-                    IP = ip,
-                    Hostname = hostname,
+                    IP         = ip,
+                    Hostname   = !string.IsNullOrEmpty(dnsName) ? dnsName : "",   // nur echter DNS-Name
                     MacAddress = mac,
-                    Vendor = vendor,
-                    Status = "up",
-                    Ports = "-",
-                    OpenPorts = new List<NmapPort>()
+                    Vendor     = vendor,
+                    Status     = "up",
+                    Ports      = "-",
+                    OpenPorts  = new List<NmapPort>()
                 };
                 dev.DeviceType = DeviceTypeHelper.Detect(dev);
                 devices.Add(dev);
@@ -671,6 +727,668 @@ namespace NmapInventory
             statusLabel.Text = $"Aktualisiere {softwareName}...";
             MessageBox.Show($"Update-Funktion für '{softwareName}' ist nicht implementiert.", "Info");
             statusLabel.Text = "Bereit";
+        }
+    }
+
+    // =========================================================
+    // =========================================================
+    // === LINUX MANAGER — SSH-Abfrage ===
+    // =========================================================
+    public class LinuxManager
+    {
+        private readonly int _defaultTimeout = 15;
+
+        public string GetHardwareInfo(string host, string username, string password, string keyFile = "", int port = 22)
+        {
+            var hw = new System.Text.StringBuilder();
+            hw.AppendLine($"=== Linux SSH-Abfrage: {host} ({DateTime.Now:dd.MM.yyyy HH:mm}) ===");
+
+            try
+            {
+                using (var client = BuildClient(host, port, username, password, keyFile))
+                {
+                    client.Connect();
+
+                    hw.AppendLine();
+                    hw.AppendLine("=== Betriebssystem ===");
+                    hw.AppendLine(Run(client, "cat /etc/os-release | grep -E '^(NAME|VERSION|ID)=' | tr -d '\"'"));
+                    hw.AppendLine(Run(client, "uname -r"));
+
+                    hw.AppendLine();
+                    hw.AppendLine("=== Prozessor ===");
+                    hw.AppendLine(Run(client, "lscpu | grep -E 'Model name|CPU\\(s\\)|Thread|Socket|Architecture'"));
+
+                    hw.AppendLine();
+                    hw.AppendLine("=== Arbeitsspeicher ===");
+                    hw.AppendLine(Run(client, "free -h | grep -E 'Mem|Swap'"));
+
+                    hw.AppendLine();
+                    hw.AppendLine("=== Festplatten ===");
+                    hw.AppendLine(Run(client, "df -h -x tmpfs -x devtmpfs -x overlay | grep -v 'udev'"));
+
+                    hw.AppendLine();
+                    hw.AppendLine("=== Netzwerk ===");
+                    hw.AppendLine(Run(client, "ip -br addr show | grep -v '^lo'"));
+
+                    hw.AppendLine();
+                    hw.AppendLine("=== Uptime ===");
+                    hw.AppendLine(Run(client, "uptime -p 2>/dev/null || uptime"));
+
+                    client.Disconnect();
+                }
+            }
+            catch (Exception ex)
+            {
+                hw.AppendLine($"Fehler: {ex.Message}");
+            }
+
+            return hw.ToString();
+        }
+
+        public List<SoftwareInfo> GetInstalledSoftware(string host, string username, string password, string keyFile = "", int port = 22)
+        {
+            var list = new List<SoftwareInfo>();
+            try
+            {
+                using (var client = BuildClient(host, port, username, password, keyFile))
+                {
+                    client.Connect();
+
+                    // Paketmanager ermitteln
+                    string pm = Run(client, "which dpkg apt rpm pacman 2>/dev/null | head -1");
+
+                    string raw;
+                    string source;
+
+                    if (pm.Contains("dpkg") || pm.Contains("apt"))
+                    {
+                        raw = Run(client, "dpkg-query -W -f='${Package}\\t${Version}\\t${Maintainer}\\n' 2>/dev/null");
+                        source = "Linux/dpkg";
+                        list = ParseTsv(raw, host, source, nameCol: 0, versionCol: 1, publisherCol: 2);
+                    }
+                    else if (pm.Contains("rpm"))
+                    {
+                        raw = Run(client, "rpm -qa --queryformat '%{NAME}\\t%{VERSION}\\t%{VENDOR}\\n' 2>/dev/null");
+                        source = "Linux/rpm";
+                        list = ParseTsv(raw, host, source, nameCol: 0, versionCol: 1, publisherCol: 2);
+                    }
+                    else if (pm.Contains("pacman"))
+                    {
+                        raw = Run(client, "pacman -Q 2>/dev/null");
+                        source = "Linux/pacman";
+                        list = ParseTsv(raw, host, source, nameCol: 0, versionCol: 1, publisherCol: -1);
+                    }
+                    else
+                    {
+                        list.Add(new SoftwareInfo { Name = "Kein unterstützter Paketmanager gefunden", Source = "Linux", PCName = host });
+                    }
+
+                    client.Disconnect();
+                }
+            }
+            catch (Exception ex)
+            {
+                list.Add(new SoftwareInfo { Name = $"SSH-Fehler: {ex.Message}", Source = "Linux", PCName = host });
+            }
+
+            return list;
+        }
+
+        private SshClient BuildClient(string host, int port, string username, string password, string keyFile)
+        {
+            if (!string.IsNullOrWhiteSpace(keyFile) && File.Exists(keyFile))
+            {
+                var keyFiles = new[] { new PrivateKeyFile(keyFile) };
+                return new SshClient(new ConnectionInfo(host, port, username,
+                    new PrivateKeyAuthenticationMethod(username, keyFiles))
+                { Timeout = TimeSpan.FromSeconds(_defaultTimeout) });
+            }
+            return new SshClient(new ConnectionInfo(host, port, username,
+                new PasswordAuthenticationMethod(username, password))
+            { Timeout = TimeSpan.FromSeconds(_defaultTimeout) });
+        }
+
+        private static string Run(SshClient client, string command)
+        {
+            using (var cmd = client.CreateCommand(command))
+            {
+                cmd.CommandTimeout = TimeSpan.FromSeconds(30);
+                return (cmd.Execute() ?? "").Trim();
+            }
+        }
+
+        private static List<SoftwareInfo> ParseTsv(string raw, string host, string source, int nameCol, int versionCol, int publisherCol)
+        {
+            var list = new List<SoftwareInfo>();
+            foreach (var line in raw.Split('\n'))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var cols = line.Split('\t');
+                list.Add(new SoftwareInfo
+                {
+                    Name      = cols.Length > nameCol    && nameCol    >= 0 ? cols[nameCol].Trim()    : line.Trim(),
+                    Version   = cols.Length > versionCol && versionCol >= 0 ? cols[versionCol].Trim() : "",
+                    Publisher = cols.Length > publisherCol && publisherCol >= 0 ? cols[publisherCol].Trim() : "",
+                    Source    = source,
+                    PCName    = host,
+                    Timestamp = DateTime.Now
+                });
+            }
+            return list;
+        }
+    }
+
+    // =========================================================
+    // === ANDROID MANAGER — ADB over WiFi ===
+    // =========================================================
+    public class AdbManager
+    {
+        private readonly string _adbPath;
+        public bool IsAdbAvailable => _adbPath != "adb" ? File.Exists(_adbPath) : IsInPath("adb");
+
+        public AdbManager() { _adbPath = FindAdb(); }
+
+        private static string FindAdb()
+        {
+            string appDir = AppDomain.CurrentDomain.BaseDirectory;
+            string[] candidates = {
+                Path.Combine(appDir, "adb.exe"),
+                Path.Combine(appDir, "adb", "adb.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk", "platform-tools", "adb.exe"),
+                @"C:\Program Files\Android\android-sdk\platform-tools\adb.exe",
+                @"C:\Android\platform-tools\adb.exe",
+            };
+            foreach (var c in candidates) if (File.Exists(c)) return c;
+            return "adb";
+        }
+
+        /// <summary>
+        /// Koppelt das Gerät via adb pair (Android 11+ Wireless Debugging).
+        /// ipPairPort = "192.168.x.y:PORT" des Koppel-Ports (nicht der Verbindungs-Port!).
+        /// </summary>
+        public string PairDevice(string ipPairPort, string pairCode)
+        {
+            // adb pair <ip:pairport> <code>
+            string result = RunAdb($"pair {ipPairPort} {pairCode}", out string err);
+            // adb pair gibt Erfolg auf stdout aus: "Successfully paired ..."
+            if (result.Contains("Successfully") || result.Contains("successfully"))
+                return $"Kopplung erfolgreich: {result.Trim()}";
+            string combined = (result + "\n" + err).Trim();
+            throw new Exception($"Kopplung fehlgeschlagen:\n{combined}");
+        }
+
+        /// <summary>
+        /// Extrahiert "Hersteller Modell" aus dem Hardware-Info-String (z.B. "Samsung Galaxy A54").
+        /// Gibt null zurück wenn nichts gefunden.
+        /// </summary>
+        public static string ExtractAdbDeviceName(string hwInfo)
+        {
+            string manufacturer = null, model = null;
+            foreach (var line in hwInfo.Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.StartsWith("Hersteller :")) manufacturer = t.Substring(t.IndexOf(':') + 1).Trim();
+                else if (t.StartsWith("Modell     :")) model = t.Substring(t.IndexOf(':') + 1).Trim();
+            }
+            if (!string.IsNullOrEmpty(manufacturer) && !string.IsNullOrEmpty(model))
+            {
+                // Hersteller nicht doppelt (z.B. "samsung SM-G991B" → "Samsung SM-G991B")
+                string mfr = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(manufacturer.ToLower());
+                return model.StartsWith(mfr, StringComparison.OrdinalIgnoreCase) ? model : $"{mfr} {model}";
+            }
+            return model ?? manufacturer;
+        }
+
+        public string GetDeviceInfo(string ipPort)
+        {
+            var hw = new System.Text.StringBuilder();
+            hw.AppendLine($"=== Android ADB-Abfrage: {ipPort} ({DateTime.Now:dd.MM.yyyy HH:mm}) ===");
+            try
+            {
+                // Verbinden
+                string connectResult = RunAdb($"connect {ipPort}", out string connectErr);
+                hw.AppendLine($"  ADB Connect: {connectResult.Trim()}");
+
+                if (connectResult.Contains("failed") || connectResult.Contains("refused") || connectResult.Contains("unable"))
+                    throw new Exception($"Verbindung fehlgeschlagen: {connectResult.Trim()}");
+
+                // Gerätestatus prüfen
+                string devicesOutput = RunAdb("devices", out _);
+                bool unauthorized = devicesOutput.Split('\n')
+                    .Any(l => l.Contains(ipPort.Split(':')[0]) && l.Contains("unauthorized"));
+                bool offline = devicesOutput.Split('\n')
+                    .Any(l => l.Contains(ipPort.Split(':')[0]) && l.Contains("offline"));
+
+                if (unauthorized)
+                    throw new Exception(
+                        "Gerät nicht autorisiert!\n\n" +
+                        "→ Auf dem Android-Gerät erscheint ein Dialog:\n" +
+                        "   'ADB-Debugging erlauben?' — bitte ZULASSEN tippen.\n\n" +
+                        "Danach erneut 'Android (ADB)' klicken.");
+
+                if (offline)
+                    throw new Exception(
+                        "Gerät ist offline.\n\n" +
+                        "→ Wireless Debugging auf dem Gerät deaktivieren und wieder aktivieren,\n" +
+                        "  dann erneut versuchen.");
+
+                string s = $"-s {ipPort}";
+                hw.AppendLine();
+                hw.AppendLine("=== Gerät ===");
+                hw.AppendLine($"  Hersteller : {RunAdb($"{s} shell getprop ro.product.manufacturer", out _).Trim()}");
+                hw.AppendLine($"  Modell     : {RunAdb($"{s} shell getprop ro.product.model", out _).Trim()}");
+                hw.AppendLine($"  Android    : {RunAdb($"{s} shell getprop ro.build.version.release", out _).Trim()}");
+                hw.AppendLine($"  SDK-Level  : {RunAdb($"{s} shell getprop ro.build.version.sdk", out _).Trim()}");
+                hw.AppendLine($"  Build      : {RunAdb($"{s} shell getprop ro.build.display.id", out _).Trim()}");
+                hw.AppendLine($"  Serial     : {RunAdb($"{s} get-serialno", out _).Trim()}");
+
+                hw.AppendLine();
+                hw.AppendLine("=== Arbeitsspeicher ===");
+                string memRaw = RunAdb($"{s} shell cat /proc/meminfo", out _);
+                foreach (var line in memRaw.Split('\n'))
+                    if (line.StartsWith("MemTotal") || line.StartsWith("MemAvailable"))
+                        hw.AppendLine($"  {line.Trim()}");
+
+                hw.AppendLine();
+                hw.AppendLine("=== Speicher ===");
+                hw.AppendLine(RunAdb($"{s} shell df /data | tail -1", out _));
+            }
+            catch (Exception ex)
+            {
+                hw.AppendLine();
+                hw.AppendLine($"⚠️  {ex.Message}");
+            }
+            return hw.ToString();
+        }
+
+        public List<SoftwareInfo> GetInstalledApps(string ipPort)
+        {
+            var list = new List<SoftwareInfo>();
+            try
+            {
+                string s = $"-s {ipPort}";
+                string raw = RunAdb($"{s} shell pm list packages -i", out _);
+                foreach (var line in raw.Split('\n'))
+                {
+                    // Format: package:com.example.app  installer=com.android.vending
+                    var trimmed = line.Trim();
+                    if (!trimmed.StartsWith("package:")) continue;
+
+                    string packageName = "";
+                    string installer = "";
+
+                    var parts = trimmed.Split(new[] { "  " }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length > 0)
+                        packageName = parts[0].Replace("package:", "").Trim();
+                    if (parts.Length > 1 && parts[1].StartsWith("installer="))
+                        installer = parts[1].Replace("installer=", "").Trim();
+
+                    if (string.IsNullOrEmpty(packageName)) continue;
+
+                    list.Add(new SoftwareInfo
+                    {
+                        Name      = packageName,
+                        Publisher = installer,
+                        Source    = "Android/ADB",
+                        PCName    = ipPort.Split(':')[0],
+                        Timestamp = DateTime.Now
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                list.Add(new SoftwareInfo { Name = $"ADB-Fehler: {ex.Message}", Source = "Android/ADB", PCName = ipPort });
+            }
+            return list;
+        }
+
+        private string RunAdb(string args, out string stderr)
+        {
+            stderr = "";
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName               = _adbPath,
+                    Arguments              = args,
+                    UseShellExecute        = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError  = true,
+                    CreateNoWindow         = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    string output = p.StandardOutput.ReadToEnd();
+                    stderr = p.StandardError.ReadToEnd();
+                    p.WaitForExit();
+                    return output;
+                }
+            }
+            catch (Exception ex) { return $"Fehler: {ex.Message}"; }
+        }
+
+        private static bool IsInPath(string exe)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo { FileName = "where", Arguments = exe, UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
+                using (var p = Process.Start(psi)) { string o = p.StandardOutput.ReadToEnd(); p.WaitForExit(); return !string.IsNullOrWhiteSpace(o); }
+            }
+            catch { return false; }
+        }
+    }
+
+    // =========================================================
+    // === IOS MANAGER — ideviceinfo (libimobiledevice) ===
+    // =========================================================
+    public class IosManager
+    {
+        private readonly string _ideviceinfoPath;
+        public bool IsAvailable => _ideviceinfoPath != "ideviceinfo" ? File.Exists(_ideviceinfoPath) : IsInPath("ideviceinfo");
+
+        public IosManager() { _ideviceinfoPath = FindTool(); }
+
+        private static string FindTool()
+        {
+            string appDir = AppDomain.CurrentDomain.BaseDirectory;
+            string[] candidates = {
+                Path.Combine(appDir, "ideviceinfo.exe"),
+                Path.Combine(appDir, "libimobiledevice", "ideviceinfo.exe"),
+                @"C:\Program Files\libimobiledevice\ideviceinfo.exe",
+            };
+            foreach (var c in candidates) if (File.Exists(c)) return c;
+            return "ideviceinfo";
+        }
+
+        /// <summary>
+        /// Fragt das verbundene iOS-Gerät ab (USB). udid leer = erstes Gerät.
+        /// </summary>
+        public string GetDeviceInfo(string udid = "")
+        {
+            var hw = new System.Text.StringBuilder();
+            hw.AppendLine($"=== iOS-Abfrage via USB ({DateTime.Now:dd.MM.yyyy HH:mm}) ===");
+            try
+            {
+                string args = string.IsNullOrEmpty(udid) ? "" : $"-u {udid}";
+                string raw  = RunTool("ideviceinfo.exe", args);
+
+                if (string.IsNullOrWhiteSpace(raw))
+                    throw new Exception("Kein iOS-Gerät gefunden oder Gerät nicht vertraut.\n→ iPhone: 'Vertrauen' antippen und iTunes / Apple Devices installieren.");
+
+                hw.AppendLine();
+                hw.AppendLine("=== Gerät ===");
+                hw.AppendLine(ExtractKey(raw, "DeviceName"));
+                hw.AppendLine(ExtractKey(raw, "ProductType"));
+                hw.AppendLine(ExtractKey(raw, "ProductVersion", "iOS-Version"));
+                hw.AppendLine(ExtractKey(raw, "BuildVersion"));
+                hw.AppendLine(ExtractKey(raw, "SerialNumber"));
+                hw.AppendLine(ExtractKey(raw, "UniqueDeviceID", "UDID"));
+
+                hw.AppendLine();
+                hw.AppendLine("=== Speicher ===");
+                hw.AppendLine(ExtractKey(raw, "TotalDiskCapacity", "Gesamt"));
+                hw.AppendLine(ExtractKey(raw, "TotalDataCapacity", "Daten"));
+
+                hw.AppendLine();
+                hw.AppendLine("ℹ️  Softwareliste nicht verfügbar (kein Jailbreak).");
+            }
+            catch (Exception ex)
+            {
+                hw.AppendLine($"Fehler: {ex.Message}");
+            }
+            return hw.ToString();
+        }
+
+        public List<string> ListDeviceUdids()
+        {
+            var list = new List<string>();
+            try
+            {
+                string raw = RunTool("idevice_id.exe", "-l");
+                foreach (var line in raw.Split('\n'))
+                    if (!string.IsNullOrWhiteSpace(line)) list.Add(line.Trim());
+            }
+            catch { }
+            return list;
+        }
+
+        private string RunTool(string exe, string args)
+        {
+            string fullPath = Path.Combine(Path.GetDirectoryName(_ideviceinfoPath) ?? "", exe);
+            if (!File.Exists(fullPath)) fullPath = exe;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName               = fullPath,
+                Arguments              = args,
+                UseShellExecute        = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                CreateNoWindow         = true
+            };
+            using (var p = Process.Start(psi))
+            {
+                string output = p.StandardOutput.ReadToEnd();
+                p.WaitForExit();
+                return output;
+            }
+        }
+
+        private static string ExtractKey(string raw, string key, string label = "")
+        {
+            foreach (var line in raw.Split('\n'))
+                if (line.TrimStart().StartsWith(key + ":"))
+                    return $"  {(string.IsNullOrEmpty(label) ? key : label),-20}: {line.Split(':')[1].Trim()}";
+            return $"  {(string.IsNullOrEmpty(label) ? key : label),-20}: -";
+        }
+
+        private static bool IsInPath(string exe)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo { FileName = "where", Arguments = exe, UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
+                using (var p = Process.Start(psi)) { string o = p.StandardOutput.ReadToEnd(); p.WaitForExit(); return !string.IsNullOrWhiteSpace(o); }
+            }
+            catch { return false; }
+        }
+    }
+
+    // =========================================================
+    // === SNMP MANAGER — v1 / v2c / v3 ===
+    // =========================================================
+    public class SnmpManager
+    {
+        // Standard-MIB-II System-OIDs
+        private static readonly string OID_SysDescr    = "1.3.6.1.2.1.1.1.0";
+        private static readonly string OID_SysObjectID = "1.3.6.1.2.1.1.2.0";
+        private static readonly string OID_SysUpTime   = "1.3.6.1.2.1.1.3.0";
+        private static readonly string OID_SysContact  = "1.3.6.1.2.1.1.4.0";
+        private static readonly string OID_SysName     = "1.3.6.1.2.1.1.5.0";
+        private static readonly string OID_SysLocation = "1.3.6.1.2.1.1.6.0";
+
+        /// <summary>
+        /// Fragt ein Gerät per SNMP ab. Version wird aus den Settings entnommen.
+        /// </summary>
+        public SnmpResult Query(string ipAddress, SnmpSettings settings)
+        {
+            try
+            {
+                switch (settings.Version)
+                {
+                    case 1:  return QueryV1(ipAddress, settings);
+                    case 2:  return QueryV2c(ipAddress, settings);
+                    case 3:  return QueryV3(ipAddress, settings);
+                    default: return Error($"Ungültige SNMP-Version: {settings.Version}");
+                }
+            }
+            catch (Exception ex)
+            {
+                return Error(ex.Message);
+            }
+        }
+
+        // ── SNMP v1 ──────────────────────────────────────────
+        private SnmpResult QueryV1(string ip, SnmpSettings s)
+        {
+            var community = new OctetString(s.Community);
+            var endpoint  = new IPEndPoint(IPAddress.Parse(ip), s.Port);
+            var oids      = BuildOidList();
+
+            var result = Messenger.Get(
+                VersionCode.V1,
+                endpoint,
+                community,
+                oids,
+                s.TimeoutMs);
+
+            return ParseGetResult(result, "v1");
+        }
+
+        // ── SNMP v2c ─────────────────────────────────────────
+        private SnmpResult QueryV2c(string ip, SnmpSettings s)
+        {
+            var community = new OctetString(s.Community);
+            var endpoint  = new IPEndPoint(IPAddress.Parse(ip), s.Port);
+            var oids      = BuildOidList();
+
+            var result = Messenger.Get(
+                VersionCode.V2,
+                endpoint,
+                community,
+                oids,
+                s.TimeoutMs);
+
+            return ParseGetResult(result, "v2c");
+        }
+
+        // ── SNMP v3 ──────────────────────────────────────────
+        private SnmpResult QueryV3(string ip, SnmpSettings s)
+        {
+            var endpoint = new IPEndPoint(IPAddress.Parse(ip), s.Port);
+            var oids     = BuildOidList();
+
+            // Auth-Provider bestimmen
+            IAuthenticationProvider authProvider = BuildAuthProvider(s);
+
+            // Privacy-Provider bestimmen
+            IPrivacyProvider privProvider = BuildPrivacyProvider(s, authProvider);
+
+            // Discovery (Engine-ID ermitteln)
+            var discovery = Messenger.GetNextDiscovery(SnmpType.GetRequestPdu);
+            var report    = discovery.GetResponse(s.TimeoutMs, endpoint);
+
+            var request = new GetRequestMessage(
+                VersionCode.V3,
+                Messenger.NextMessageId,
+                Messenger.NextRequestId,
+                new OctetString(s.Username),
+                OctetString.Empty,
+                oids,
+                privProvider,
+                Messenger.MaxMessageSize,
+                report);
+
+            var reply = request.GetResponse(s.TimeoutMs, endpoint);
+
+            if (reply.Pdu().ErrorStatus.ToInt32() != 0)
+                return Error($"SNMP v3 Fehler: ErrorStatus={reply.Pdu().ErrorStatus}");
+
+            return ParseGetResult(reply.Pdu().Variables.ToList(), "v3");
+        }
+
+        // ── Hilfsmethoden ─────────────────────────────────────
+        private static List<Variable> BuildOidList() => new List<Variable>
+        {
+            new Variable(new ObjectIdentifier(OID_SysDescr)),
+            new Variable(new ObjectIdentifier(OID_SysObjectID)),
+            new Variable(new ObjectIdentifier(OID_SysUpTime)),
+            new Variable(new ObjectIdentifier(OID_SysContact)),
+            new Variable(new ObjectIdentifier(OID_SysName)),
+            new Variable(new ObjectIdentifier(OID_SysLocation)),
+        };
+
+        private static SnmpResult ParseGetResult(IList<Variable> vars, string version)
+        {
+            var r = new SnmpResult { Success = true, SnmpVersion = version };
+            foreach (var v in vars)
+            {
+                string oid = v.Id.ToString();
+                string val = v.Data.ToString();
+
+                if (oid == OID_SysDescr)    r.SysDescr    = val;
+                else if (oid == OID_SysObjectID) r.SysObjectID = val;
+                else if (oid == OID_SysUpTime)   r.SysUpTime   = FormatUptime(val);
+                else if (oid == OID_SysContact)  r.SysContact  = val;
+                else if (oid == OID_SysName)     r.SysName     = val;
+                else if (oid == OID_SysLocation) r.SysLocation = val;
+            }
+            return r;
+        }
+
+        private static string FormatUptime(string raw)
+        {
+            // SharpSnmpLib liefert TimeTicks als Hundertstelsekunden-String
+            if (uint.TryParse(raw, out uint ticks))
+            {
+                var ts = TimeSpan.FromSeconds(ticks / 100.0);
+                return $"{(int)ts.TotalDays}d {ts.Hours:D2}h {ts.Minutes:D2}m";
+            }
+            return raw;
+        }
+
+        private static IAuthenticationProvider BuildAuthProvider(SnmpSettings s)
+        {
+            if (s.SecurityLevel == "NoAuth")
+                return DefaultAuthenticationProvider.Instance;
+
+            switch (s.AuthProtocol?.ToUpper())
+            {
+                case "SHA384": return new SHA384AuthenticationProvider(new OctetString(s.AuthPassword));
+                case "SHA512": return new SHA512AuthenticationProvider(new OctetString(s.AuthPassword));
+                default:       return new SHA256AuthenticationProvider(new OctetString(s.AuthPassword));
+            }
+        }
+
+        private static IPrivacyProvider BuildPrivacyProvider(SnmpSettings s, IAuthenticationProvider auth)
+        {
+            if (s.SecurityLevel == "NoAuth" || s.SecurityLevel == "AuthNoPriv")
+                return new DefaultPrivacyProvider(auth);
+
+            switch (s.PrivProtocol?.ToUpper())
+            {
+                case "AES256": return new AES256PrivacyProvider(new OctetString(s.PrivPassword), auth);
+                case "AES192": return new AES192PrivacyProvider(new OctetString(s.PrivPassword), auth);
+                default:       return new AESPrivacyProvider(new OctetString(s.PrivPassword), auth); // AES-128
+            }
+        }
+
+        private static SnmpResult Error(string msg)
+            => new SnmpResult { Success = false, ErrorMessage = msg };
+
+        /// <summary>
+        /// Fragt alle übergebenen Geräte per SNMP ab und trägt das Ergebnis in DeviceInfo.SnmpData ein.
+        /// Geräte ohne Antwort bekommen SnmpData.Success = false.
+        /// </summary>
+        public void QueryDevices(IEnumerable<DeviceInfo> devices, SnmpSettings settings,
+            Action<string> progress = null)
+        {
+            foreach (var device in devices)
+            {
+                progress?.Invoke($"SNMP → {device.IP}");
+                try
+                {
+                    device.SnmpData = Query(device.IP, settings);
+                    // Hostname aus SNMP übernehmen falls noch keiner bekannt
+                    if (device.SnmpData.Success &&
+                        string.IsNullOrEmpty(device.Hostname) &&
+                        !string.IsNullOrEmpty(device.SnmpData.SysName))
+                        device.Hostname = device.SnmpData.SysName;
+                }
+                catch
+                {
+                    device.SnmpData = new SnmpResult { Success = false, ErrorMessage = "Timeout / nicht erreichbar" };
+                }
+            }
         }
     }
 

@@ -1309,14 +1309,20 @@ namespace NmapInventory
         private void LoadDatabases()
         {
             clb.Items.Clear();
-            string mainPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "nmap_inventory.db");
-            if (System.IO.File.Exists(mainPath))
-                clb.Items.Add(new DbItem { Path = mainPath, Display = "Haupt-Datenbank  (nmap_inventory.db)" }, true);
-
             try
             {
-                var kunden = _db.GetCustomers();
-                var allFiles = _db.GetAllDatabaseFiles();
+                string mainPath = _db.GetMainDatabasePath();
+                var kunden      = _db.GetCustomers();
+                var allFiles    = _db.GetAllDatabaseFiles();
+
+                // Haupt-DB zuerst
+                if (System.IO.File.Exists(mainPath))
+                {
+                    long kb = new System.IO.FileInfo(mainPath).Length / 1024;
+                    clb.Items.Add(new DbItem { Path = mainPath, Display = $"Haupt-Datenbank  ({kb} KB)  —  nmap_inventory.db" }, true);
+                }
+
+                // Kunden-DBs
                 foreach (var file in allFiles.OrderBy(f => f))
                 {
                     if (file == mainPath) continue;
@@ -1541,5 +1547,321 @@ namespace NmapInventory
         }
     }
 
+    // =========================================================
+    // === SNMP-EINSTELLUNGS-DIALOG ===
+    // =========================================================
+    public class SnmpSettingsDialog : Form
+    {
+        public SnmpSettings Settings { get; private set; }
+
+        private ComboBox cmbVersion;
+        private TextBox tbCommunity;
+        private NumericUpDown nudPort, nudTimeout;
+        // v3-Felder
+        private TextBox tbUsername, tbAuthPw, tbPrivPw;
+        private ComboBox cmbAuthProto, cmbPrivProto, cmbSecLevel;
+        private Panel panelV3;
+
+        public SnmpSettingsDialog(SnmpSettings current = null)
+        {
+            var s = current ?? new SnmpSettings();
+            Settings = s;
+
+            Text = "SNMP-Einstellungen";
+            Width = 420; Height = 470;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false; MinimizeBox = false;
+            Font = new Font("Segoe UI", 9);
+
+            int y = 14;
+
+            // ── Version ──────────────────────────────────────
+            Controls.Add(MkLabel("SNMP-Version:", 14, y));
+            cmbVersion = new ComboBox { Left = 130, Top = y, Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbVersion.Items.AddRange(new object[] { "v1", "v2c", "v3" });
+            cmbVersion.SelectedIndex = s.Version == 1 ? 0 : s.Version == 3 ? 2 : 1;
+            cmbVersion.SelectedIndexChanged += (_, __) => UpdateV3Panel();
+            Controls.Add(cmbVersion);
+            y += 30;
+
+            // ── Community (v1/v2c) ────────────────────────────
+            Controls.Add(MkLabel("Community:", 14, y));
+            tbCommunity = new TextBox { Left = 130, Top = y, Width = 150, Text = s.Community };
+            Controls.Add(tbCommunity);
+            y += 30;
+
+            // ── Port ──────────────────────────────────────────
+            Controls.Add(MkLabel("UDP-Port:", 14, y));
+            nudPort = new NumericUpDown { Left = 130, Top = y, Width = 80, Minimum = 1, Maximum = 65535, Value = s.Port };
+            Controls.Add(nudPort);
+            y += 30;
+
+            // ── Timeout ───────────────────────────────────────
+            Controls.Add(MkLabel("Timeout (ms):", 14, y));
+            nudTimeout = new NumericUpDown { Left = 130, Top = y, Width = 80, Minimum = 200, Maximum = 30000, Increment = 500, Value = s.TimeoutMs };
+            Controls.Add(nudTimeout);
+            y += 36;
+
+            // ── Trennlinie ────────────────────────────────────
+            var sep = new Label { Left = 14, Top = y, Width = 370, Height = 1, BackColor = Color.LightGray };
+            Controls.Add(sep);
+            y += 8;
+
+            // ── SNMPv3-Panel ──────────────────────────────────
+            panelV3 = new Panel { Left = 0, Top = y, Width = 410, Height = 200 };
+            int py = 0;
+
+            panelV3.Controls.Add(MkLabel("Benutzername:", 14, py));
+            tbUsername = new TextBox { Left = 130, Top = py, Width = 200, Text = s.Username };
+            panelV3.Controls.Add(tbUsername);
+            py += 28;
+
+            panelV3.Controls.Add(MkLabel("Auth-Protokoll:", 14, py));
+            cmbAuthProto = new ComboBox { Left = 130, Top = py, Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbAuthProto.Items.AddRange(new object[] { "SHA256", "SHA384", "SHA512" });
+            cmbAuthProto.SelectedItem = s.AuthProtocol == "SHA384" ? "SHA384" : s.AuthProtocol == "SHA512" ? "SHA512" : "SHA256";
+            if (cmbAuthProto.SelectedIndex < 0) cmbAuthProto.SelectedIndex = 0;
+            panelV3.Controls.Add(cmbAuthProto);
+            py += 28;
+
+            panelV3.Controls.Add(MkLabel("Auth-Passwort:", 14, py));
+            tbAuthPw = new TextBox { Left = 130, Top = py, Width = 200, UseSystemPasswordChar = true, Text = s.AuthPassword };
+            panelV3.Controls.Add(tbAuthPw);
+            py += 28;
+
+            panelV3.Controls.Add(MkLabel("Priv-Protokoll:", 14, py));
+            cmbPrivProto = new ComboBox { Left = 130, Top = py, Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbPrivProto.Items.AddRange(new object[] { "AES128", "AES192", "AES256" });
+            cmbPrivProto.SelectedItem = s.PrivProtocol == "AES192" ? "AES192" : s.PrivProtocol == "AES256" ? "AES256" : "AES128";
+            if (cmbPrivProto.SelectedIndex < 0) cmbPrivProto.SelectedIndex = 0;
+            panelV3.Controls.Add(cmbPrivProto);
+            py += 28;
+
+            panelV3.Controls.Add(MkLabel("Priv-Passwort:", 14, py));
+            tbPrivPw = new TextBox { Left = 130, Top = py, Width = 200, UseSystemPasswordChar = true, Text = s.PrivPassword };
+            panelV3.Controls.Add(tbPrivPw);
+            py += 28;
+
+            panelV3.Controls.Add(MkLabel("Security Level:", 14, py));
+            cmbSecLevel = new ComboBox { Left = 130, Top = py, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbSecLevel.Items.AddRange(new object[] { "NoAuth", "AuthNoPriv", "AuthPriv" });
+            cmbSecLevel.SelectedItem = s.SecurityLevel ?? "AuthPriv";
+            if (cmbSecLevel.SelectedIndex < 0) cmbSecLevel.SelectedIndex = 2;
+            panelV3.Controls.Add(cmbSecLevel);
+
+            Controls.Add(panelV3);
+
+            // ── Buttons ───────────────────────────────────────
+            var btnOk = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80 };
+            var btnCancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, Width = 90 };
+            btnOk.Click += (_, __) => ApplySettings();
+            btnOk.Left = 220; btnOk.Top = Height - 74;
+            btnCancel.Left = 310; btnCancel.Top = Height - 74;
+            Controls.AddRange(new Control[] { btnOk, btnCancel });
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+
+            UpdateV3Panel();
+        }
+
+        private void UpdateV3Panel()
+        {
+            bool isV3 = cmbVersion.SelectedIndex == 2;
+            panelV3.Visible = isV3;
+            tbCommunity.Enabled = !isV3;
+        }
+
+        private void ApplySettings()
+        {
+            Settings.Version = cmbVersion.SelectedIndex == 0 ? 1 : cmbVersion.SelectedIndex == 2 ? 3 : 2;
+            Settings.Community = tbCommunity.Text.Trim();
+            Settings.Port = (int)nudPort.Value;
+            Settings.TimeoutMs = (int)nudTimeout.Value;
+            Settings.Username = tbUsername.Text.Trim();
+            Settings.AuthPassword = tbAuthPw.Text;
+            Settings.PrivPassword = tbPrivPw.Text;
+            Settings.AuthProtocol = cmbAuthProto.SelectedItem?.ToString() ?? "SHA256";
+            Settings.PrivProtocol = cmbPrivProto.SelectedItem?.ToString() ?? "AES128";
+            Settings.SecurityLevel = cmbSecLevel.SelectedItem?.ToString() ?? "AuthPriv";
+        }
+
+        private static Label MkLabel(string text, int x, int y)
+            => new Label { Text = text, Left = x, Top = y + 3, AutoSize = true };
+    }
+
+    // =========================================================
+    // === LINUX / SSH VERBINDUNGS-DIALOG ===
+    // =========================================================
+    public class LinuxSshConnectionForm : Form
+    {
+        public string Host        { get; private set; }
+        public int    Port        { get; private set; } = 22;
+        public string Username    { get; private set; }
+        public string Password    { get; private set; }
+        public string KeyFilePath { get; private set; } = "";
+
+        private TextBox tbHost, tbUser, tbPass, tbKey;
+        private NumericUpDown nudPort;
+
+        public LinuxSshConnectionForm()
+        {
+            Text = "Linux SSH-Verbindung";
+            Width = 420; Height = 310;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false; MinimizeBox = false;
+            Font = new Font("Segoe UI", 9);
+
+            int y = 16;
+
+            Controls.Add(Lbl("Host / IP:", 14, y));
+            tbHost = new TextBox { Left = 130, Top = y, Width = 240 };
+            Controls.Add(tbHost);
+            y += 30;
+
+            Controls.Add(Lbl("SSH-Port:", 14, y));
+            nudPort = new NumericUpDown { Left = 130, Top = y, Width = 70, Minimum = 1, Maximum = 65535, Value = 22 };
+            Controls.Add(nudPort);
+            y += 30;
+
+            Controls.Add(Lbl("Benutzername:", 14, y));
+            tbUser = new TextBox { Left = 130, Top = y, Width = 240 };
+            Controls.Add(tbUser);
+            y += 30;
+
+            Controls.Add(Lbl("Passwort:", 14, y));
+            tbPass = new TextBox { Left = 130, Top = y, Width = 240, UseSystemPasswordChar = true };
+            Controls.Add(tbPass);
+            y += 30;
+
+            var sep = new Label { Left = 14, Top = y, Width = 370, Height = 1, BackColor = Color.LightGray };
+            Controls.Add(sep);
+            y += 10;
+
+            Controls.Add(Lbl("SSH-Key (opt.):", 14, y));
+            tbKey = new TextBox { Left = 130, Top = y, Width = 190 };
+            Controls.Add(tbKey);
+            var btnBrowse = new Button { Text = "...", Left = 326, Top = y - 1, Width = 44, Height = 24 };
+            btnBrowse.Click += (s, e) =>
+            {
+                using (var dlg = new OpenFileDialog { Filter = "Private Key|*.pem;*.ppk;*.key|Alle Dateien|*.*" })
+                    if (dlg.ShowDialog() == DialogResult.OK) tbKey.Text = dlg.FileName;
+            };
+            Controls.Add(btnBrowse);
+            y += 36;
+
+            var btnOk = new Button { Text = "Verbinden", DialogResult = DialogResult.OK, Width = 90, Left = 210, Top = y };
+            var btnCancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, Width = 90, Left = 308, Top = y };
+            btnOk.Click += (s, e) =>
+            {
+                if (string.IsNullOrWhiteSpace(tbHost.Text)) { MessageBox.Show("Bitte Host angeben."); DialogResult = DialogResult.None; return; }
+                if (string.IsNullOrWhiteSpace(tbUser.Text)) { MessageBox.Show("Bitte Benutzernamen angeben."); DialogResult = DialogResult.None; return; }
+                if (string.IsNullOrWhiteSpace(tbPass.Text) && string.IsNullOrWhiteSpace(tbKey.Text))
+                { MessageBox.Show("Bitte Passwort oder SSH-Key angeben."); DialogResult = DialogResult.None; return; }
+
+                Host        = tbHost.Text.Trim();
+                Port        = (int)nudPort.Value;
+                Username    = tbUser.Text.Trim();
+                Password    = tbPass.Text;
+                KeyFilePath = tbKey.Text.Trim();
+            };
+            Controls.AddRange(new Control[] { btnOk, btnCancel });
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+        }
+
+        public void SetIP(string ip) => tbHost.Text = ip;
+
+        private static Label Lbl(string text, int x, int y)
+            => new Label { Text = text, Left = x, Top = y + 3, AutoSize = true };
+    }
+
+    // =========================================================
+    // === ADB CONNECTION DIALOG ===
+    // =========================================================
+    public class AdbConnectionDialog : Form
+    {
+        public string IpPort    { get; private set; }
+        public bool   DoPairing { get; private set; }
+        public string PairPort  { get; private set; }
+        public string PairCode  { get; private set; }
+
+        private TextBox tbIp, tbPort, tbPairPort, tbPairCode;
+        private CheckBox cbPair;
+        private Panel pairPanel;
+
+        public AdbConnectionDialog(string defaultIp = "")
+        {
+            Text            = "Android ADB – Verbindung";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition   = FormStartPosition.CenterParent;
+            MaximizeBox     = false;
+            MinimizeBox     = false;
+            ClientSize      = new Size(420, 310);
+
+            var lblInfo = new Label
+            {
+                Text      = "Android 11+: Entwickleroptionen → Wireless Debugging\n" +
+                            "Den dort angezeigten Port eintragen (z.B. :43215).\n" +
+                            "Port 5555 gilt NUR für ältere Geräte (Android ≤10).",
+                Left = 10, Top = 10, Width = 395, Height = 52,
+                ForeColor = Color.DarkBlue
+            };
+
+            Controls.Add(lblInfo);
+            Controls.Add(Lbl("IP-Adresse:", 10, 72));
+            tbIp   = new TextBox { Left = 110, Top = 70, Width = 165, Text = defaultIp };
+            Controls.Add(tbIp);
+            Controls.Add(Lbl("Port:", 290, 72));
+            tbPort = new TextBox { Left = 325, Top = 70, Width = 75, Text = "5555" };
+            Controls.Add(tbPort);
+
+            cbPair = new CheckBox
+            {
+                Text  = "Erst koppeln – Android 11+ (einmalig pro Gerät)",
+                Left  = 10, Top = 108, Width = 390, Height = 22
+            };
+            cbPair.CheckedChanged += (s, e) => { pairPanel.Visible = cbPair.Checked; Height = cbPair.Checked ? 390 : 310; };
+            Controls.Add(cbPair);
+
+            pairPanel = new Panel { Left = 0, Top = 133, Width = 420, Height = 100, Visible = false };
+            var lblPI = new Label
+            {
+                Text      = "Wireless Debugging → 'Mit Code koppeln'.\nDort werden Koppel-Port und 6-stelliger Code angezeigt:",
+                Left = 10, Top = 2, Width = 395, Height = 38, ForeColor = Color.DarkGreen
+            };
+            pairPanel.Controls.Add(lblPI);
+            pairPanel.Controls.Add(Lbl("Koppel-Port:", 10, 44));
+            tbPairPort = new TextBox { Left = 100, Top = 42, Width = 70 };
+            pairPanel.Controls.Add(tbPairPort);
+            pairPanel.Controls.Add(Lbl("Code:", 190, 44));
+            tbPairCode = new TextBox { Left = 230, Top = 42, Width = 90 };
+            pairPanel.Controls.Add(tbPairCode);
+            Controls.Add(pairPanel);
+
+            var btnOk = new Button { Text = "Verbinden", Left = 225, Top = 268, Width = 90, DialogResult = DialogResult.OK };
+            btnOk.Click += (s, e) =>
+            {
+                if (string.IsNullOrWhiteSpace(tbIp.Text) || string.IsNullOrWhiteSpace(tbPort.Text))
+                { MessageBox.Show("IP und Port angeben.", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                if (cbPair.Checked && (string.IsNullOrWhiteSpace(tbPairPort.Text) || string.IsNullOrWhiteSpace(tbPairCode.Text)))
+                { MessageBox.Show("Koppel-Port und -Code angeben.", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                IpPort = $"{tbIp.Text.Trim()}:{tbPort.Text.Trim()}";
+                DoPairing = cbPair.Checked;
+                PairPort  = tbPairPort.Text.Trim();
+                PairCode  = tbPairCode.Text.Trim();
+                DialogResult = DialogResult.OK;
+                Close();
+            };
+            var btnCancel = new Button { Text = "Abbrechen", Left = 323, Top = 268, Width = 85, DialogResult = DialogResult.Cancel };
+            Controls.AddRange(new Control[] { btnOk, btnCancel });
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+        }
+
+        private static Label Lbl(string text, int x, int y)
+            => new Label { Text = text, Left = x, Top = y + 3, AutoSize = true };
+    }
 
 }

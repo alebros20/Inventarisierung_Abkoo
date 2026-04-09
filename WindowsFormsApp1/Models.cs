@@ -39,6 +39,9 @@ namespace NmapInventory
         // Gerätekategorie — wird automatisch beim Scan gesetzt
         public DeviceType DeviceType { get; set; } = DeviceType.Unbekannt;
         public string DeviceTypeIcon => DeviceTypeHelper.GetIcon(DeviceType);
+
+        // SNMP-Abfrageergebnis — optional, nur wenn SNMP aktiv war
+        public SnmpResult SnmpData { get; set; }
     }
 
     // Einzelner Port mit Service-Info
@@ -76,9 +79,11 @@ namespace NmapInventory
         public string IP { get; set; }
         public string Hostname { get; set; }
         public string MacAddress { get; set; }
+        public string Vendor { get; set; }
         public string Status { get; set; }
         public string Ports { get; set; }
         public string OS { get; set; }
+        public string Comment { get; set; }
         public DeviceType DeviceType { get; set; } = DeviceType.Unbekannt;
         public string DeviceTypeIcon => DeviceTypeHelper.GetIcon(DeviceType);
     }
@@ -130,12 +135,28 @@ namespace NmapInventory
         /// Ermittelt den Gerätetyp anhand von Vendor, OS, Ports und Hostname.
         /// Reihenfolge: Ports (sicherste Erkennung) → OS → Vendor → Hostname
         /// </summary>
+        /// <summary>
+        /// Prüft ob eine MAC-Adresse "locally administered" ist (zufällig generiert, z.B. Android-Datenschutz).
+        /// Bit 1 des ersten Oktetts gesetzt → kein echter OUI → wahrscheinlich Smartphone.
+        /// </summary>
+        private static bool IsRandomizedMac(string mac)
+        {
+            if (string.IsNullOrEmpty(mac)) return false;
+            try
+            {
+                byte first = Convert.ToByte(mac.Split(':')[0], 16);
+                return (first & 0x02) != 0; // locally administered bit
+            }
+            catch { return false; }
+        }
+
         public static DeviceType Detect(DeviceInfo device)
         {
             string vendor = (device.Vendor ?? "").ToLower();
             string os = (device.OS ?? device.OSDetails ?? "").ToLower();
             string hostname = (device.Hostname ?? "").ToLower();
             var ports = device.OpenPorts ?? new List<NmapPort>();
+            string mac = device.MacAddress ?? "";
 
             // ── 1. Ports — zuverlässigste Erkennung ──────────
             bool hasPort(int p) => ports.Any(x => x.Port == p);
@@ -202,8 +223,18 @@ namespace NmapInventory
                 return DeviceType.MacOS;
             }
             if (VendorMatches(vendor, "samsung", "huawei", "xiaomi", "oneplus", "oppo",
-                "motorola", "sony mobile", "lg electronics", "amazon"))
+                "motorola", "sony mobile", "lg electronics"))
                 return DeviceType.Smartphone;
+
+            // Amazon: Echo/Alexa → IoT, Fire TV → SmartTV, Kindle → Tablet
+            if (VendorMatches(vendor, "amazon"))
+            {
+                if (hostname.Contains("fire") || hostname.Contains("aftm") || hostname.Contains("aftb"))
+                    return DeviceType.SmartTV;
+                if (hostname.Contains("kindle") || hostname.Contains("kftt") || hostname.Contains("kfjwi"))
+                    return DeviceType.Tablet;
+                return DeviceType.IoT;   // Echo, Alexa, Ring, etc.
+            }
 
             if (VendorMatches(vendor, "hp", "hewlett", "canon", "epson", "brother",
                 "xerox", "lexmark", "kyocera", "ricoh", "konica", "oki data", "zebra"))
@@ -218,8 +249,8 @@ namespace NmapInventory
                 "drobo", "promise"))
                 return DeviceType.NAS;
 
-            if (VendorMatches(vendor, "nintendo"))
-                return DeviceType.IoT; // Nintendo-Konsole als IoT
+            if (VendorMatches(vendor, "nintendo", "sony interactive", "microsoft xbox", "valve"))
+                return DeviceType.IoT; // Spielkonsole → IoT als nächstpassender Typ
 
             if (VendorMatches(vendor, "microsoft"))
             {
@@ -319,5 +350,37 @@ namespace NmapInventory
     {
         public List<DeviceInfo> Devices { get; set; }
         public string RawOutput { get; set; }
+    }
+
+    // ── SNMP-Konfiguration ────────────────────────────────────
+    public class SnmpSettings
+    {
+        public int Version { get; set; } = 2;           // 1, 2 oder 3
+        public string Community { get; set; } = "public"; // v1/v2c Community-String
+        public int Port { get; set; } = 161;
+        public int TimeoutMs { get; set; } = 2000;
+
+        // SNMPv3-Felder
+        public string Username { get; set; } = "";
+        public string AuthPassword { get; set; } = "";
+        public string PrivPassword { get; set; } = "";
+        public string AuthProtocol { get; set; } = "SHA256";  // SHA256, SHA384 oder SHA512
+        public string PrivProtocol { get; set; } = "AES128"; // AES128, AES192 oder AES256
+        public string SecurityLevel { get; set; } = "AuthPriv"; // NoAuth, AuthNoPriv, AuthPriv
+    }
+
+    // ── SNMP-Abfrageergebnis ──────────────────────────────────
+    public class SnmpResult
+    {
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; }
+        public string SysDescr { get; set; }      // 1.3.6.1.2.1.1.1.0
+        public string SysObjectID { get; set; }   // 1.3.6.1.2.1.1.2.0
+        public string SysUpTime { get; set; }     // 1.3.6.1.2.1.1.3.0
+        public string SysContact { get; set; }    // 1.3.6.1.2.1.1.4.0
+        public string SysName { get; set; }       // 1.3.6.1.2.1.1.5.0
+        public string SysLocation { get; set; }   // 1.3.6.1.2.1.1.6.0
+        public string SnmpVersion { get; set; }   // "v1", "v2c" oder "v3"
+        public DateTime QueryTime { get; set; } = DateTime.Now;
     }
 }
