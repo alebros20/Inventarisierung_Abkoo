@@ -28,6 +28,7 @@ namespace NmapInventory
                         IP TEXT UNIQUE NOT NULL,
                         Hostname TEXT,
                         MacAddress TEXT UNIQUE,
+                        StandortID INTEGER,
                         CustomHostname INTEGER DEFAULT 0,
                         DeviceType INTEGER DEFAULT 0,
                         Vendor TEXT DEFAULT '',
@@ -104,26 +105,6 @@ namespace NmapInventory
 
                     CREATE INDEX IF NOT EXISTS idx_device_ports ON DevicePorts(DeviceID);
 
-                    CREATE TABLE IF NOT EXISTS Inventar_Geraete (
-                        DeviceID INTEGER, IP TEXT, Hostname TEXT, MacAddress TEXT,
-                        Vendor TEXT, OS TEXT, DeviceType INTEGER, Comment TEXT,
-                        CustomerID INTEGER, CustomerName TEXT,
-                        LocationID INTEGER, LocationName TEXT,
-                        LastSeen DATETIME, Status TEXT
-                    );
-                    CREATE TABLE IF NOT EXISTS Inventar_Software (
-                        DeviceID INTEGER, IP TEXT, Hostname TEXT,
-                        SoftwareName TEXT, Version TEXT, Publisher TEXT,
-                        InstallDate TEXT, Source TEXT,
-                        CustomerID INTEGER, CustomerName TEXT,
-                        LocationID INTEGER, LocationName TEXT
-                    );
-                    CREATE TABLE IF NOT EXISTS Inventar_Ports (
-                        DeviceID INTEGER, IP TEXT, Hostname TEXT,
-                        Port INTEGER, Protocol TEXT, State TEXT, Service TEXT, Version TEXT,
-                        CustomerID INTEGER, CustomerName TEXT,
-                        LocationID INTEGER, LocationName TEXT
-                    );
                 ";
                 using (var cmd = new SQLiteCommand(create, conn)) cmd.ExecuteNonQuery();
 
@@ -624,6 +605,7 @@ namespace NmapInventory
                         IP TEXT UNIQUE NOT NULL,
                         Hostname TEXT,
                         MacAddress TEXT UNIQUE,
+                        StandortID INTEGER,
                         FirstSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
                         LastSeen DATETIME DEFAULT CURRENT_TIMESTAMP
                     );
@@ -745,75 +727,6 @@ namespace NmapInventory
 
                     -- Index fuer schnellen Port-Lookup
                     CREATE INDEX IF NOT EXISTS idx_device_ports ON DevicePorts(DeviceID);
-
-                    -- ═══════════════════════════════════════════════════
-                    -- FLACHE INVENTAR-TABELLEN (für Pivot-Tabellen in LibreOffice)
-                    -- Alle IDs direkt in einer Zeile — kein JOIN nötig
-                    -- Werden nach jedem Scan automatisch neu befüllt
-                    -- ═══════════════════════════════════════════════════
-
-                    CREATE TABLE IF NOT EXISTS Inventar_Geraete (
-                        ID          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        KundeID     INTEGER,
-                        KundeName   TEXT,
-                        StandortID  INTEGER,
-                        StandortName TEXT,
-                        GeraetID    INTEGER,
-                        IP          TEXT,
-                        Hostname    TEXT,
-                        MacAddress  TEXT,
-                        GeraetTyp   INTEGER,
-                        GeraetTypName TEXT,
-                        Vendor      TEXT,
-                        OS          TEXT,
-                        Comment     TEXT,
-                        ErsterScan  TEXT,
-                        LetzterScan TEXT,
-                        AnzahlPorts INTEGER DEFAULT 0,
-                        AnzahlSoftware INTEGER DEFAULT 0,
-                        Aktualisiert DATETIME DEFAULT CURRENT_TIMESTAMP
-                    );
-
-                    CREATE TABLE IF NOT EXISTS Inventar_Software (
-                        ID              INTEGER PRIMARY KEY AUTOINCREMENT,
-                        KundeID         INTEGER,
-                        KundeName       TEXT,
-                        StandortID      INTEGER,
-                        StandortName    TEXT,
-                        GeraetID        INTEGER,
-                        IP              TEXT,
-                        Hostname        TEXT,
-                        MacAddress      TEXT,
-                        GeraetTyp       INTEGER,
-                        GeraetTypName   TEXT,
-                        SoftwareID      INTEGER,
-                        SoftwareName    TEXT,
-                        SoftwareVersion TEXT,
-                        Hersteller      TEXT,
-                        InstallDatum    TEXT,
-                        Quelle          TEXT,
-                        Aktualisiert    DATETIME DEFAULT CURRENT_TIMESTAMP
-                    );
-
-                    CREATE TABLE IF NOT EXISTS Inventar_Ports (
-                        ID              INTEGER PRIMARY KEY AUTOINCREMENT,
-                        KundeID         INTEGER,
-                        KundeName       TEXT,
-                        StandortID      INTEGER,
-                        StandortName    TEXT,
-                        GeraetID        INTEGER,
-                        IP              TEXT,
-                        Hostname        TEXT,
-                        GeraetTyp       INTEGER,
-                        GeraetTypName   TEXT,
-                        PortID          INTEGER,
-                        Port            INTEGER,
-                        Protokoll       TEXT,
-                        Status          TEXT,
-                        Dienst          TEXT,
-                        Version         TEXT,
-                        Aktualisiert    DATETIME DEFAULT CURRENT_TIMESTAMP
-                    );
 
                     CREATE TABLE IF NOT EXISTS LocationIPs (
                         ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -966,8 +879,105 @@ namespace NmapInventory
                 TryAlterTable(conn, "CREATE INDEX IF NOT EXISTS idx_location_devices ON LocationDevices(LocationID)");
                 TryAlterTable(conn, "CREATE INDEX IF NOT EXISTS idx_location_ips_device ON LocationIPs(DeviceID)");
                 TryAlterTable(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_location_ips_unique ON LocationIPs(LocationID, IPAddress)");
-                TryAlterTable(conn, "ALTER TABLE Inventar_Geraete ADD COLUMN Comment TEXT");
-                TryAlterTable(conn, "ALTER TABLE Inventar_Software ADD COLUMN MacAddress TEXT");
+
+                // Migration: StandortID auf Devices setzen (aus LocationDevices ableiten)
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN StandortID INTEGER");
+                TryAlterTable(conn, @"
+                    UPDATE Devices SET StandortID = (
+                        SELECT ld.LocationID FROM LocationDevices ld WHERE ld.DeviceID = Devices.ID LIMIT 1
+                    ) WHERE StandortID IS NULL AND EXISTS (SELECT 1 FROM LocationDevices ld WHERE ld.DeviceID = Devices.ID)");
+
+                // UNIQUE-Index auf DeviceSoftware (verhindert Duplikate)
+                TryAlterTable(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_device_software_unique ON DeviceSoftware(DeviceID, Name)");
+
+                // ── Inventar_* als VIEWs (immer live, kein Refresh nötig) ──
+                // Alte Views entfernen, dann frische Views anlegen
+                // WICHTIG: Jedes Statement einzeln ausführen, da SQLite sonst einen Fehler wirft
+                // Zuerst sicherstellen, dass Views (nicht Tables) gelöscht werden
+                TryDropViewSafely(conn, "Inventar_Geraete");
+                TryDropViewSafely(conn, "Inventar_Software");
+                TryDropViewSafely(conn, "Inventar_Ports");
+
+                using (var viewCmd = new SQLiteCommand(conn))
+                {
+                    // Create Inventar_Geraete
+                    viewCmd.CommandText = @"
+                        CREATE VIEW Inventar_Geraete AS
+                        SELECT
+                            c.ID  AS KundeID,     c.Name AS KundeName,
+                            l.ID  AS StandortID,  l.Name AS StandortName,
+                            d.ID  AS GeraetID,    d.IP,  d.Hostname,  d.MacAddress,
+                            d.DeviceType AS GeraetTyp,
+                            CASE d.DeviceType
+                                WHEN 1  THEN 'Windows PC'    WHEN 2  THEN 'Windows Server'
+                                WHEN 3  THEN 'Linux'         WHEN 4  THEN 'Drucker'
+                                WHEN 5  THEN 'Smartphone'    WHEN 6  THEN 'Tablet'
+                                WHEN 7  THEN 'Netzwerkgerät' WHEN 8  THEN 'NAS'
+                                WHEN 9  THEN 'Smart TV'      WHEN 10 THEN 'IoT-Gerät'
+                                WHEN 11 THEN 'macOS'         WHEN 12 THEN 'Laptop'
+                                ELSE 'Unbekannt'
+                            END AS GeraetTypName,
+                            d.Vendor, d.OS, d.Comment,
+                            d.FirstSeen AS ErsterScan, d.LastSeen AS LetzterScan,
+                            (SELECT COUNT(*) FROM DevicePorts    WHERE DeviceID = d.ID) AS AnzahlPorts,
+                            (SELECT COUNT(*) FROM DeviceSoftware WHERE DeviceID = d.ID) AS AnzahlSoftware
+                        FROM Devices d
+                        LEFT JOIN Locations l  ON l.ID = d.StandortID
+                        LEFT JOIN Customers c  ON c.ID = l.CustomerID;";
+                    viewCmd.ExecuteNonQuery();
+
+                    // Create Inventar_Software
+                    viewCmd.CommandText = @"
+                        CREATE VIEW Inventar_Software AS
+                        SELECT
+                            c.ID  AS KundeID,     c.Name AS KundeName,
+                            l.ID  AS StandortID,  l.Name AS StandortName,
+                            d.ID  AS GeraetID,    d.IP,  d.Hostname,  d.MacAddress,
+                            d.DeviceType AS GeraetTyp,
+                            CASE d.DeviceType
+                                WHEN 1  THEN 'Windows PC'    WHEN 2  THEN 'Windows Server'
+                                WHEN 3  THEN 'Linux'         WHEN 4  THEN 'Drucker'
+                                WHEN 5  THEN 'Smartphone'    WHEN 6  THEN 'Tablet'
+                                WHEN 7  THEN 'Netzwerkgerät' WHEN 8  THEN 'NAS'
+                                WHEN 9  THEN 'Smart TV'      WHEN 10 THEN 'IoT-Gerät'
+                                WHEN 11 THEN 'macOS'         WHEN 12 THEN 'Laptop'
+                                ELSE 'Unbekannt'
+                            END AS GeraetTypName,
+                            sw.ID AS SoftwareID, sw.Name AS SoftwareName,
+                            sw.Version AS SoftwareVersion,
+                            sw.Publisher AS Hersteller, sw.InstallDate AS InstallDatum,
+                            sw.Source AS Quelle
+                        FROM DeviceSoftware sw
+                        JOIN Devices d         ON d.ID = sw.DeviceID
+                        LEFT JOIN Locations l  ON l.ID = d.StandortID
+                        LEFT JOIN Customers c  ON c.ID = l.CustomerID;";
+                    viewCmd.ExecuteNonQuery();
+
+                    // Create Inventar_Ports
+                    viewCmd.CommandText = @"
+                        CREATE VIEW Inventar_Ports AS
+                        SELECT
+                            c.ID  AS KundeID,     c.Name AS KundeName,
+                            l.ID  AS StandortID,  l.Name AS StandortName,
+                            d.ID  AS GeraetID,    d.IP,  d.Hostname,
+                            d.DeviceType AS GeraetTyp,
+                            CASE d.DeviceType
+                                WHEN 1  THEN 'Windows PC'    WHEN 2  THEN 'Windows Server'
+                                WHEN 3  THEN 'Linux'         WHEN 4  THEN 'Drucker'
+                                WHEN 5  THEN 'Smartphone'    WHEN 6  THEN 'Tablet'
+                                WHEN 7  THEN 'Netzwerkgerät' WHEN 8  THEN 'NAS'
+                                WHEN 9  THEN 'Smart TV'      WHEN 10 THEN 'IoT-Gerät'
+                                WHEN 11 THEN 'macOS'         WHEN 12 THEN 'Laptop'
+                                ELSE 'Unbekannt'
+                            END AS GeraetTypName,
+                            p.ID AS PortID, p.Port, p.Protocol AS Protokoll,
+                            p.State AS Status, p.Service AS Dienst, p.Version
+                        FROM DevicePorts p
+                        JOIN Devices d         ON d.ID = p.DeviceID
+                        LEFT JOIN Locations l  ON l.ID = d.StandortID
+                        LEFT JOIN Customers c  ON c.ID = l.CustomerID;";
+                    viewCmd.ExecuteNonQuery();
+                }
 
                 // Grunddaten für normalisiertes Modell (idempotent via INSERT OR IGNORE)
                 using (var cmd2 = new SQLiteCommand(conn))
@@ -1025,6 +1035,25 @@ namespace NmapInventory
         {
             try { using (var cmd = new SQLiteCommand(sql, conn)) cmd.ExecuteNonQuery(); }
             catch { }
+        }
+
+        private void TryDropViewSafely(SQLiteConnection conn, string viewName)
+        {
+            try
+            {
+                using (var cmd = new SQLiteCommand($"DROP VIEW IF EXISTS {viewName};", conn))
+                    cmd.ExecuteNonQuery();
+            }
+            catch
+            {
+                // Falls als View nicht vorhanden, versuche als Tabelle zu löschen (für alte DBs)
+                try
+                {
+                    using (var cmd = new SQLiteCommand($"DROP TABLE IF EXISTS {viewName};", conn))
+                        cmd.ExecuteNonQuery();
+                }
+                catch { }
+            }
         }
 
         // =========================================================
@@ -1690,37 +1719,26 @@ namespace NmapInventory
 
         private void SaveOrUpdateSoftware(SQLiteConnection conn, int deviceID, SoftwareInfo sw)
         {
-            using (var cmd = new SQLiteCommand("SELECT ID FROM DeviceSoftware WHERE DeviceID = @DeviceID AND Name = @Name", conn))
+            // UPSERT: Falls (DeviceID, Name) existiert → Update, sonst Insert
+            using (var cmd = new SQLiteCommand(@"
+                INSERT INTO DeviceSoftware (DeviceID, PCName, Name, Version, Publisher, InstallLocation, InstallDate, Source)
+                VALUES (@DeviceID, @PCName, @Name, @Version, @Publisher, @InstallLocation, @InstallDate, @Source)
+                ON CONFLICT(DeviceID, Name) DO UPDATE SET
+                    Version   = excluded.Version,
+                    Publisher = excluded.Publisher,
+                    InstallDate = excluded.InstallDate,
+                    Source    = excluded.Source,
+                    QueryTime = CURRENT_TIMESTAMP", conn))
             {
                 cmd.Parameters.AddWithValue("@DeviceID", deviceID);
+                cmd.Parameters.AddWithValue("@PCName", sw.PCName ?? "");
                 cmd.Parameters.AddWithValue("@Name", sw.Name);
-                var result = cmd.ExecuteScalar();
-
-                if (result != null)
-                    using (var updateCmd = new SQLiteCommand("UPDATE DeviceSoftware SET Version=@Version, Publisher=@Publisher, InstallDate=@InstallDate, Source=@Source, QueryTime=CURRENT_TIMESTAMP WHERE ID=@ID", conn))
-                    {
-                        updateCmd.Parameters.AddWithValue("@ID", Convert.ToInt32(result));
-                        updateCmd.Parameters.AddWithValue("@Version", sw.Version ?? "");
-                        updateCmd.Parameters.AddWithValue("@Publisher", sw.Publisher ?? "");
-                        updateCmd.Parameters.AddWithValue("@InstallDate", sw.InstallDate ?? "");
-                        updateCmd.Parameters.AddWithValue("@Source", sw.Source ?? "");
-                        updateCmd.ExecuteNonQuery();
-                    }
-                else
-                    using (var insertCmd = new SQLiteCommand(
-                        "INSERT INTO DeviceSoftware (DeviceID, PCName, Name, Version, Publisher, InstallLocation, InstallDate, Source) " +
-                        "VALUES (@DeviceID, @PCName, @Name, @Version, @Publisher, @InstallLocation, @InstallDate, @Source)", conn))
-                    {
-                        insertCmd.Parameters.AddWithValue("@DeviceID", deviceID);
-                        insertCmd.Parameters.AddWithValue("@PCName", sw.PCName ?? "");
-                        insertCmd.Parameters.AddWithValue("@Name", sw.Name);
-                        insertCmd.Parameters.AddWithValue("@Version", sw.Version ?? "");
-                        insertCmd.Parameters.AddWithValue("@Publisher", sw.Publisher ?? "");
-                        insertCmd.Parameters.AddWithValue("@InstallLocation", sw.InstallLocation ?? "");
-                        insertCmd.Parameters.AddWithValue("@InstallDate", sw.InstallDate ?? "");
-                        insertCmd.Parameters.AddWithValue("@Source", sw.Source ?? "");
-                        insertCmd.ExecuteNonQuery();
-                    }
+                cmd.Parameters.AddWithValue("@Version", sw.Version ?? "");
+                cmd.Parameters.AddWithValue("@Publisher", sw.Publisher ?? "");
+                cmd.Parameters.AddWithValue("@InstallLocation", sw.InstallLocation ?? "");
+                cmd.Parameters.AddWithValue("@InstallDate", sw.InstallDate ?? "");
+                cmd.Parameters.AddWithValue("@Source", sw.Source ?? "");
+                cmd.ExecuteNonQuery();
             }
         }
 
@@ -1732,12 +1750,14 @@ namespace NmapInventory
                 conn.Open();
                 string whereClause = GetDateFilter(filter, "ds.QueryTime");
                 string query = $@"
-                    SELECT 
-                        ds.ID, ds.QueryTime as Zeitstempel, d.Hostname as PCName,
+                    SELECT
+                        ds.ID, ds.DeviceID, ds.QueryTime as Zeitstempel,
+                        COALESCE(d.Hostname, ds.PCName) as PCName,
                         ds.Name, ds.Version, ds.Publisher, ds.InstallDate,
                         ds.QueryTime as LastUpdate
                     FROM DeviceSoftware ds
-                    JOIN Devices d ON ds.DeviceID = d.ID
+                    LEFT JOIN Devices d ON d.ID = ds.DeviceID
+                                       OR (ds.DeviceID IS NULL AND (d.IP = ds.PCName OR d.Hostname = ds.PCName))
                     {whereClause}
                     ORDER BY ds.QueryTime DESC";
 
@@ -1746,13 +1766,14 @@ namespace NmapInventory
                     while (reader.Read())
                         software.Add(new DatabaseSoftware
                         {
-                            ID = Convert.ToInt32(reader["ID"]),
+                            ID         = Convert.ToInt32(reader["ID"]),
+                            DeviceID   = reader["DeviceID"] == DBNull.Value ? 0 : Convert.ToInt32(reader["DeviceID"]),
                             Zeitstempel = reader["Zeitstempel"].ToString(),
-                            Name = reader["Name"].ToString(),
-                            Version = reader["Version"]?.ToString(),
-                            Publisher = reader["Publisher"]?.ToString(),
+                            Name       = reader["Name"].ToString(),
+                            Version    = reader["Version"]?.ToString(),
+                            Publisher  = reader["Publisher"]?.ToString(),
                             InstallDate = reader["InstallDate"]?.ToString(),
-                            PCName = reader["PCName"]?.ToString(),
+                            PCName     = reader["PCName"]?.ToString(),
                             LastUpdate = reader["LastUpdate"]?.ToString()
                         });
             }
@@ -2030,17 +2051,27 @@ namespace NmapInventory
         /// Weist ein Device (aus Devices-Tabelle) einer Location zu.
         /// </summary>
         public void AssignDeviceToLocation(int locationId, int deviceId)
-            => ExecuteNonQuery(
+        {
+            ExecuteNonQuery(
                 "INSERT OR IGNORE INTO LocationDevices (LocationID, DeviceID) VALUES (@LocationID, @DeviceID)",
                 new[] { ("@LocationID", locationId.ToString()), ("@DeviceID", deviceId.ToString()) });
+            ExecuteNonQuery(
+                "UPDATE Devices SET StandortID = @LocationID WHERE ID = @DeviceID",
+                new[] { ("@LocationID", locationId.ToString()), ("@DeviceID", deviceId.ToString()) });
+        }
 
         /// <summary>
         /// Entfernt die Zuweisung eines Devices von einer Location.
         /// </summary>
         public void UnassignDeviceFromLocation(int locationId, int deviceId)
-            => ExecuteNonQuery(
+        {
+            ExecuteNonQuery(
                 "DELETE FROM LocationDevices WHERE LocationID=@LocationID AND DeviceID=@DeviceID",
                 new[] { ("@LocationID", locationId.ToString()), ("@DeviceID", deviceId.ToString()) });
+            ExecuteNonQuery(
+                "UPDATE Devices SET StandortID = NULL WHERE ID = @DeviceID AND StandortID = @LocationID",
+                new[] { ("@LocationID", locationId.ToString()), ("@DeviceID", deviceId.ToString()) });
+        }
 
         /// <summary>
         /// Laedt alle direkt zugewiesenen Geraete einer Location (nicht rekursiv).
@@ -2287,173 +2318,6 @@ namespace NmapInventory
             }
         }
 
-        // =========================================================
-        // === FLACHE INVENTAR-TABELLEN (für LibreOffice Pivot) ===
-        // =========================================================
-
-        /// <summary>
-        /// Befüllt Inventar_Geraete, Inventar_Software und Inventar_Ports neu.
-        /// Wird nach jedem Scan aufgerufen. Alle IDs sind direkt in der Zeile.
-        /// </summary>
-        public void RefreshInventarTables()
-        {
-            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
-            {
-                conn.Open();
-                using (var tx = conn.BeginTransaction())
-                {
-                    // Tabellen leeren
-                    new SQLiteCommand("DELETE FROM Inventar_Geraete",  conn, tx).ExecuteNonQuery();
-                    new SQLiteCommand("DELETE FROM Inventar_Software",  conn, tx).ExecuteNonQuery();
-                    new SQLiteCommand("DELETE FROM Inventar_Ports",     conn, tx).ExecuteNonQuery();
-
-                    // ── Inventar_Geraete ──────────────────────────
-                    new SQLiteCommand(@"
-                        INSERT INTO Inventar_Geraete
-                            (KundeID, KundeName, StandortID, StandortName,
-                             GeraetID, IP, Hostname, MacAddress,
-                             GeraetTyp, GeraetTypName, Vendor, OS, Comment,
-                             ErsterScan, LetzterScan, AnzahlPorts, AnzahlSoftware)
-                        SELECT
-                            c.ID, c.Name,
-                            l.ID, l.Name,
-                            d.ID, d.IP, d.Hostname, d.MacAddress,
-                            d.DeviceType,
-                            CASE d.DeviceType
-                                WHEN 1  THEN 'Windows PC'
-                                WHEN 2  THEN 'Windows Server'
-                                WHEN 3  THEN 'Linux'
-                                WHEN 4  THEN 'Drucker'
-                                WHEN 5  THEN 'Smartphone'
-                                WHEN 6  THEN 'Tablet'
-                                WHEN 7  THEN 'Netzwerkgerät'
-                                WHEN 8  THEN 'NAS'
-                                WHEN 9  THEN 'Smart TV'
-                                WHEN 10 THEN 'IoT-Gerät'
-                                WHEN 11 THEN 'macOS'
-                                WHEN 12 THEN 'Laptop'
-                                ELSE 'Unbekannt'
-                            END,
-                            d.Vendor, d.OS, d.Comment,
-                            d.FirstSeen, d.LastSeen,
-                            (SELECT COUNT(*) FROM DevicePorts    WHERE DeviceID = d.ID),
-                            (SELECT COUNT(*) FROM DeviceSoftware WHERE DeviceID = d.ID)
-                        FROM Devices d
-                        JOIN LocationDevices ld ON ld.DeviceID   = d.ID
-                        JOIN Locations l        ON l.ID           = ld.LocationID
-                        JOIN Customers c        ON c.ID           = l.CustomerID
-                        GROUP BY d.ID, l.ID", conn, tx).ExecuteNonQuery();
-
-                    // Geräte ohne Standort auch aufnehmen (KundeID/StandortID = NULL)
-                    new SQLiteCommand(@"
-                        INSERT INTO Inventar_Geraete
-                            (KundeID, KundeName, StandortID, StandortName,
-                             GeraetID, IP, Hostname, MacAddress,
-                             GeraetTyp, GeraetTypName, Vendor, OS, Comment,
-                             ErsterScan, LetzterScan, AnzahlPorts, AnzahlSoftware)
-                        SELECT
-                            NULL, NULL, NULL, NULL,
-                            d.ID, d.IP, d.Hostname, d.MacAddress,
-                            d.DeviceType,
-                            CASE d.DeviceType
-                                WHEN 1  THEN 'Windows PC'  WHEN 2  THEN 'Windows Server'
-                                WHEN 3  THEN 'Linux'       WHEN 4  THEN 'Drucker'
-                                WHEN 5  THEN 'Smartphone'  WHEN 6  THEN 'Tablet'
-                                WHEN 7  THEN 'Netzwerkgerät' WHEN 8 THEN 'NAS'
-                                WHEN 9  THEN 'Smart TV'    WHEN 10 THEN 'IoT-Gerät'
-                                WHEN 11 THEN 'macOS'       WHEN 12 THEN 'Laptop'
-                                ELSE 'Unbekannt'
-                            END,
-                            d.Vendor, d.OS, d.Comment, d.FirstSeen, d.LastSeen,
-                            (SELECT COUNT(*) FROM DevicePorts    WHERE DeviceID = d.ID),
-                            (SELECT COUNT(*) FROM DeviceSoftware WHERE DeviceID = d.ID)
-                        FROM Devices d
-                        WHERE NOT EXISTS (SELECT 1 FROM LocationDevices ld WHERE ld.DeviceID = d.ID)",
-                        conn, tx).ExecuteNonQuery();
-
-                    // ── Inventar_Software ─────────────────────────
-                    new SQLiteCommand(@"
-                        INSERT INTO Inventar_Software
-                            (KundeID, KundeName, StandortID, StandortName,
-                             GeraetID, IP, Hostname, MacAddress, GeraetTyp, GeraetTypName,
-                             SoftwareID, SoftwareName, SoftwareVersion,
-                             Hersteller, InstallDatum, Quelle)
-                        SELECT
-                            c.ID, c.Name, l.ID, l.Name,
-                            d.ID, d.IP, d.Hostname, d.MacAddress, d.DeviceType,
-                            CASE d.DeviceType
-                                WHEN 1 THEN 'Windows PC' WHEN 2 THEN 'Windows Server'
-                                WHEN 3 THEN 'Linux'      WHEN 7 THEN 'Netzwerkgerät'
-                                WHEN 12 THEN 'Laptop'    ELSE 'Sonstiges'
-                            END,
-                            sw.ID, sw.Name, sw.Version,
-                            sw.Publisher, sw.InstallDate, sw.Source
-                        FROM DeviceSoftware sw
-                        JOIN Devices d ON (d.ID = sw.DeviceID)
-                                       OR (sw.DeviceID IS NULL AND (d.IP = sw.PCName OR d.Hostname = sw.PCName))
-                        JOIN LocationDevices ld ON ld.DeviceID = d.ID
-                        JOIN Locations l        ON l.ID        = ld.LocationID
-                        JOIN Customers c        ON c.ID        = l.CustomerID
-                        GROUP BY sw.ID, l.ID", conn, tx).ExecuteNonQuery();
-
-                    // Software ohne Standort
-                    new SQLiteCommand(@"
-                        INSERT INTO Inventar_Software
-                            (KundeID, KundeName, StandortID, StandortName,
-                             GeraetID, IP, Hostname, MacAddress, GeraetTyp, GeraetTypName,
-                             SoftwareID, SoftwareName, SoftwareVersion,
-                             Hersteller, InstallDatum, Quelle)
-                        SELECT
-                            NULL, NULL, NULL, NULL,
-                            d.ID, d.IP, d.Hostname, d.MacAddress, d.DeviceType, 'Unbekannt',
-                            sw.ID, sw.Name, sw.Version,
-                            sw.Publisher, sw.InstallDate, sw.Source
-                        FROM DeviceSoftware sw
-                        JOIN Devices d ON (d.ID = sw.DeviceID)
-                                       OR (sw.DeviceID IS NULL AND (d.IP = sw.PCName OR d.Hostname = sw.PCName))
-                        WHERE NOT EXISTS (SELECT 1 FROM LocationDevices ld WHERE ld.DeviceID = d.ID)",
-                        conn, tx).ExecuteNonQuery();
-
-                    // ── Inventar_Ports ────────────────────────────
-                    new SQLiteCommand(@"
-                        INSERT INTO Inventar_Ports
-                            (KundeID, KundeName, StandortID, StandortName,
-                             GeraetID, IP, Hostname, GeraetTyp, GeraetTypName,
-                             PortID, Port, Protokoll, Status, Dienst, Version)
-                        SELECT
-                            c.ID, c.Name, l.ID, l.Name,
-                            d.ID, d.IP, d.Hostname, d.DeviceType,
-                            CASE d.DeviceType
-                                WHEN 1 THEN 'Windows PC' WHEN 2 THEN 'Windows Server'
-                                WHEN 3 THEN 'Linux'      WHEN 7 THEN 'Netzwerkgerät'
-                                WHEN 12 THEN 'Laptop'    ELSE 'Sonstiges'
-                            END,
-                            p.ID, p.Port, p.Protocol, p.State, p.Service, p.Version
-                        FROM DevicePorts p
-                        JOIN Devices d         ON d.ID  = p.DeviceID
-                        JOIN LocationDevices ld ON ld.DeviceID  = d.ID
-                        JOIN Locations l        ON l.ID  = ld.LocationID
-                        JOIN Customers c        ON c.ID  = l.CustomerID
-                        GROUP BY p.ID, l.ID", conn, tx).ExecuteNonQuery();
-
-                    // Ports ohne Standort
-                    new SQLiteCommand(@"
-                        INSERT INTO Inventar_Ports
-                            (KundeID, KundeName, StandortID, StandortName,
-                             GeraetID, IP, Hostname, GeraetTyp, GeraetTypName,
-                             PortID, Port, Protokoll, Status, Dienst, Version)
-                        SELECT
-                            NULL, NULL, NULL, NULL,
-                            d.ID, d.IP, d.Hostname, d.DeviceType, 'Unbekannt',
-                            p.ID, p.Port, p.Protocol, p.State, p.Service, p.Version
-                        FROM DevicePorts p
-                        JOIN Devices d ON d.ID = p.DeviceID
-                        WHERE NOT EXISTS (SELECT 1 FROM LocationDevices ld WHERE ld.DeviceID = d.ID)",
-                        conn, tx).ExecuteNonQuery();
-
-                    tx.Commit();
-                }
-            }
-        }
+        // RefreshInventarTables() entfällt — Inventar_* sind jetzt VIEWs (live, immer aktuell)
     }
 }

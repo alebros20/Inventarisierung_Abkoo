@@ -13,7 +13,7 @@ namespace NmapInventory
         // === UI COMPONENTS ===
         private TabControl tabControl;
         private TextBox networkTextBox;
-        private Button scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton;
+        private Button scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton, refreshButton;
         private Label statusLabel;
         private ProgressBar scanProgressBar;
         private System.Windows.Forms.Timer scanAnimTimer;
@@ -63,7 +63,7 @@ namespace NmapInventory
 
             InitializeComponent();
             dbManager.InitializeDatabase();
-            dbManager.RefreshInventarTables();
+            // Inventar_* sind jetzt VIEWs — kein Refresh nötig
             LoadCustomerTree();
             ApplyAutoSizing();
 
@@ -163,7 +163,11 @@ namespace NmapInventory
             snmpSettingsButton.Text = "⚙️ SNMP-Einstellungen";
             snmpSettingsButton.Click += (s, e) => OpenSnmpSettings();
 
-            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton });
+            refreshButton = new Button { Location = new Point(793, 42), Width = 130, Height = 28, BackColor = Color.FromArgb(220, 240, 220), Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            refreshButton.Text = "🔄 Aktualisieren";
+            refreshButton.Click += (s, e) => RefreshAllViews();
+
+            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton, refreshButton });
             return topPanel;
         }
 
@@ -439,6 +443,7 @@ namespace NmapInventory
 
             dbSoftwareTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10) };
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "ID", Width = 50, ReadOnly = true, Visible = false });
+            dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "GeräteID", Width = 80, ReadOnly = true });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Zeitstempel", Width = 150, ReadOnly = true });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "PC Name/IP", Width = 150 });
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Name", Width = 200 });
@@ -1204,7 +1209,7 @@ namespace NmapInventory
                         currentDevices = result.Devices;
                         dbManager.SaveDevices(currentDevices);
                         SyncDevicesToLocation(selectedLocationID, currentDevices);
-                        dbManager.RefreshInventarTables();
+                        // Inventar_* sind jetzt VIEWs — kein Refresh nötig
                         DisplayDevicesWithStatus(currentDevices, oldDevices);
                         LoadDatabaseDevices();
 
@@ -1532,7 +1537,7 @@ namespace NmapInventory
                         dbManager.SaveHardwareInfo(ip, hwInfo);
                     }
                     dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
-                    dbManager.RefreshInventarTables();
+                    // Inventar_* sind jetzt VIEWs — kein Refresh nötig
 
                     Invoke(new MethodInvoker(() =>
                     {
@@ -1582,7 +1587,7 @@ namespace NmapInventory
                                 dbManager.SaveHardwareInfo(ip, hw);
                                 dbManager.SaveSoftware(sw);
                                 dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
-                                dbManager.RefreshInventarTables();
+                                // Inventar_* sind jetzt VIEWs — kein Refresh nötig
                                 Invoke(new MethodInvoker(() =>
                                 {
                                     hardwareInfoTextBox.Text = hw; DisplaySoftwareGrid(sw, ip);
@@ -1661,7 +1666,7 @@ namespace NmapInventory
                             if (!string.IsNullOrEmpty(adbName))
                                 dbManager.SetHostnameIfEmpty(ip, adbName);
 
-                            dbManager.RefreshInventarTables();
+                            // Inventar_* sind jetzt VIEWs — kein Refresh nötig
                             Invoke(new MethodInvoker(() =>
                             {
                                 hardwareInfoTextBox.Text = hw; DisplaySoftwareGrid(sw, ip);
@@ -1710,7 +1715,7 @@ namespace NmapInventory
                                 { Name = "iOS: Softwareliste nicht verfügbar (kein Jailbreak)", Source = "iOS", PCName = ip } };
                             dbManager.SaveHardwareInfo(ip, hw);
                             dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
-                            dbManager.RefreshInventarTables();
+                            // Inventar_* sind jetzt VIEWs — kein Refresh nötig
                             Invoke(new MethodInvoker(() =>
                             {
                                 hardwareInfoTextBox.Text = hw; DisplaySoftwareGrid(sw, ip);
@@ -1755,7 +1760,7 @@ namespace NmapInventory
                                 dbManager.SaveSoftware(sw);
                                 dbManager.SaveHardwareInfo(ip, $"=== Remote abgefragt: {DateTime.Now:dd.MM.yyyy HH:mm} ===\n{hw}");
                                 dbManager.SaveVendorFromScan(ip, ExtractVendorFromHwInfo(hw));
-                                dbManager.RefreshInventarTables();
+                                // Inventar_* sind jetzt VIEWs — kein Refresh nötig
 
                                 Invoke(new MethodInvoker(() =>
                                 {
@@ -1828,6 +1833,29 @@ namespace NmapInventory
         // === DB LADEN / SPEICHERN ===
         // =========================================================
 
+        private void RefreshAllViews()
+        {
+            refreshButton.Enabled = false;
+            refreshButton.Text = "⏳ Lädt...";
+            try
+            {
+                // Inventar_* sind jetzt VIEWs — kein Refresh nötig
+                LoadDatabaseDevices();
+                LoadDatabaseSoftware();
+                LoadCustomerTree();
+                statusLabel.Text = "✔ Daten aktualisiert — " + DateTime.Now.ToString("HH:mm:ss");
+            }
+            catch (Exception ex)
+            {
+                statusLabel.Text = "Fehler beim Aktualisieren: " + ex.Message;
+            }
+            finally
+            {
+                refreshButton.Enabled = true;
+                refreshButton.Text = "🔄 Aktualisieren";
+            }
+        }
+
         private void LoadDatabaseDevices(string filter = "Alle")
         {
             dbDeviceTable.Rows.Clear();
@@ -1846,7 +1874,7 @@ namespace NmapInventory
             {
                 string key = sw.PCName + "|" + sw.Name + "|" + sw.Version;
                 if (displayed.Add(key))
-                    dbSoftwareTable.Rows.Add(sw.ID, sw.Zeitstempel, sw.PCName, sw.Name, sw.Version, sw.Publisher, sw.InstallDate, sw.LastUpdate);
+                    dbSoftwareTable.Rows.Add(sw.ID, sw.DeviceID > 0 ? (object)sw.DeviceID : "", sw.Zeitstempel, sw.PCName, sw.Name, sw.Version, sw.Publisher, sw.InstallDate, sw.LastUpdate);
             }
         }
 
@@ -2684,7 +2712,7 @@ namespace NmapInventory
             var list = new List<DatabaseSoftware>();
             foreach (DataGridViewRow row in dbSoftwareTable.Rows)
                 if (row.Cells[0].Value != null)
-                    list.Add(new DatabaseSoftware { ID = Convert.ToInt32(row.Cells[0].Value), Zeitstempel = row.Cells[1].Value?.ToString(), PCName = row.Cells[2].Value?.ToString(), Name = row.Cells[3].Value?.ToString(), Version = row.Cells[4].Value?.ToString(), Publisher = row.Cells[5].Value?.ToString(), InstallDate = row.Cells[6].Value?.ToString(), LastUpdate = row.Cells[7].Value?.ToString() });
+                    list.Add(new DatabaseSoftware { ID = Convert.ToInt32(row.Cells[0].Value), DeviceID = row.Cells[1].Value is int did ? did : 0, Zeitstempel = row.Cells[2].Value?.ToString(), PCName = row.Cells[3].Value?.ToString(), Name = row.Cells[4].Value?.ToString(), Version = row.Cells[5].Value?.ToString(), Publisher = row.Cells[6].Value?.ToString(), InstallDate = row.Cells[7].Value?.ToString(), LastUpdate = row.Cells[8].Value?.ToString() });
             return list;
         }
 

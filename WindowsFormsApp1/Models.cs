@@ -305,6 +305,7 @@ namespace NmapInventory
     public class DatabaseSoftware
     {
         public int ID { get; set; }
+        public int DeviceID { get; set; }
         public string Zeitstempel { get; set; }
         public string PCName { get; set; }
         public string Name { get; set; }
