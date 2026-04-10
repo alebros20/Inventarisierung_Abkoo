@@ -152,9 +152,6 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="AuswertungForm.cs">
-      <SubType>Form</SubType>
-    </Compile>
     <Compile Include="DatabaseManager.cs" />
     <Compile Include="Dialogs.cs" />
     <Compile Include="Form1.cs">

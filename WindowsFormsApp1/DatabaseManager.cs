@@ -1802,6 +1802,23 @@ namespace NmapInventory
             => ExecuteNonQuery("DELETE FROM DeviceSoftware WHERE ID=@ID", new[] { ("@ID", id.ToString()) });
 
         // =========================================================
+        // === VIEW DATA EXPORT ===
+        // =========================================================
+
+        public System.Data.DataTable GetViewData(string viewName)
+        {
+            var dt = new System.Data.DataTable();
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand($"SELECT * FROM [{viewName}]", conn))
+                using (var reader = cmd.ExecuteReader())
+                    dt.Load(reader);
+            }
+            return dt;
+        }
+
+        // =========================================================
         // === CUSTOMERS ===
         // =========================================================
 
