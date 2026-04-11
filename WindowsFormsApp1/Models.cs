@@ -86,6 +86,54 @@ namespace NmapInventory
         public string Comment { get; set; }
         public DeviceType DeviceType { get; set; } = DeviceType.Unbekannt;
         public string DeviceTypeIcon => DeviceTypeHelper.GetIcon(DeviceType);
+        public int? CredentialTemplateID { get; set; }
+        public string UniqueID { get; set; }
+        public string UniqueIDSource { get; set; }
+    }
+
+    public class DeviceInterface
+    {
+        public int ID { get; set; }
+        public int DeviceID { get; set; }
+        public string MacAddress { get; set; }
+        public string IPAddress { get; set; }
+        public string InterfaceType { get; set; }
+        public bool IsPrimary { get; set; }
+    }
+
+    public class CredentialTemplate
+    {
+        public int ID { get; set; }
+        public string Name { get; set; }
+        public string Protocol { get; set; }       // "WMI", "SSH", "SNMP", "Telnet", "HTTP"
+        public string Username { get; set; }
+        public string EncryptedPass { get; set; }
+        public int? Port { get; set; }
+        public string DeviceTypes { get; set; }    // Comma-separated, e.g. "1,2,12". Null = universal
+        public int Priority { get; set; }
+        public string Created { get; set; }
+
+        public int GetDefaultPort()
+        {
+            switch (Protocol)
+            {
+                case "WMI":    return 135;
+                case "SSH":    return 22;
+                case "SNMP":   return 161;
+                case "Telnet": return 23;
+                case "HTTP":   return 80;
+                case "HTTPS":  return 443;
+                default:       return 0;
+            }
+        }
+
+        public int EffectivePort => Port ?? GetDefaultPort();
+
+        public bool MatchesDeviceType(DeviceType type)
+        {
+            if (string.IsNullOrEmpty(DeviceTypes)) return true; // universal
+            return DeviceTypes.Split(',').Any(s => s.Trim() == ((int)type).ToString());
+        }
     }
 
     // ── Gerätetyp-Erkennung ──────────────────────────────────

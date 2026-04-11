@@ -1864,4 +1864,505 @@ namespace NmapInventory
             => new Label { Text = text, Left = x, Top = y + 3, AutoSize = true };
     }
 
+    // =========================================================
+    // === CREDENTIAL TEMPLATE EDIT DIALOG ===
+    // =========================================================
+    public class CredentialTemplateEditDialog : Form
+    {
+        public CredentialTemplate Template { get; private set; }
+
+        private TextBox txtName, txtUsername, txtPassword, txtPort;
+        private ComboBox cmbProtocol;
+        private CheckedListBox clbDeviceTypes;
+        private NumericUpDown nudPriority;
+        private Label lblPortHint;
+        private bool passwordVisible = false;
+
+        public CredentialTemplateEditDialog(CredentialTemplate existing = null)
+        {
+            Text = existing == null ? "Neue Vorlage" : "Vorlage bearbeiten";
+            Width = 460; Height = 520;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false; MinimizeBox = false;
+            Font = new System.Drawing.Font("Segoe UI", 9);
+
+            int y = 14;
+
+            // Name
+            Controls.Add(new Label { Text = "Name:", Location = new System.Drawing.Point(14, y), AutoSize = true });
+            txtName = new TextBox { Location = new System.Drawing.Point(140, y - 2), Width = 280 };
+            Controls.Add(txtName);
+            y += 32;
+
+            // Protocol
+            Controls.Add(new Label { Text = "Protokoll:", Location = new System.Drawing.Point(14, y), AutoSize = true });
+            cmbProtocol = new ComboBox
+            {
+                Location = new System.Drawing.Point(140, y - 2), Width = 280,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cmbProtocol.Items.AddRange(new object[] { "WMI", "SSH", "SNMP", "Telnet", "HTTP", "HTTPS" });
+            cmbProtocol.SelectedIndex = 0;
+            cmbProtocol.SelectedIndexChanged += (s, e) => UpdatePortPlaceholder();
+            Controls.Add(cmbProtocol);
+            y += 32;
+
+            // Username
+            Controls.Add(new Label { Text = "Benutzername:", Location = new System.Drawing.Point(14, y), AutoSize = true });
+            txtUsername = new TextBox { Location = new System.Drawing.Point(140, y - 2), Width = 280 };
+            Controls.Add(txtUsername);
+            y += 32;
+
+            // Password + eye toggle
+            Controls.Add(new Label { Text = "Passwort:", Location = new System.Drawing.Point(14, y), AutoSize = true });
+            txtPassword = new TextBox
+            {
+                Location = new System.Drawing.Point(140, y - 2), Width = 244,
+                UseSystemPasswordChar = true
+            };
+            Controls.Add(txtPassword);
+
+            var btnEye = new Button
+            {
+                Text = "\ud83d\udc41", Location = new System.Drawing.Point(388, y - 3),
+                Width = 32, Height = 24, FlatStyle = FlatStyle.Flat
+            };
+            btnEye.Click += (s, e) =>
+            {
+                passwordVisible = !passwordVisible;
+                txtPassword.UseSystemPasswordChar = !passwordVisible;
+            };
+            Controls.Add(btnEye);
+            y += 32;
+
+            // Port
+            Controls.Add(new Label { Text = "Port:", Location = new System.Drawing.Point(14, y), AutoSize = true });
+            txtPort = new TextBox { Location = new System.Drawing.Point(140, y - 2), Width = 100 };
+            Controls.Add(txtPort);
+            lblPortHint = new Label
+            {
+                Location = new System.Drawing.Point(248, y), AutoSize = true,
+                ForeColor = System.Drawing.Color.Gray
+            };
+            Controls.Add(lblPortHint);
+            y += 32;
+
+            // Priority
+            Controls.Add(new Label { Text = "Priorität:", Location = new System.Drawing.Point(14, y), AutoSize = true });
+            nudPriority = new NumericUpDown
+            {
+                Location = new System.Drawing.Point(140, y - 2), Width = 100,
+                Minimum = 0, Maximum = 999, Value = 0
+            };
+            Controls.Add(nudPriority);
+            y += 36;
+
+            // Device Types
+            Controls.Add(new Label { Text = "Gerätetypen:", Location = new System.Drawing.Point(14, y), AutoSize = true });
+            clbDeviceTypes = new CheckedListBox
+            {
+                Location = new System.Drawing.Point(140, y), Width = 280, Height = 150,
+                CheckOnClick = true
+            };
+            foreach (DeviceType dt in Enum.GetValues(typeof(DeviceType)))
+                if (dt != DeviceType.Unbekannt)
+                    clbDeviceTypes.Items.Add(new DeviceTypeItem(dt), false);
+            Controls.Add(clbDeviceTypes);
+            y += 158;
+
+            // Buttons
+            var btnOk = new Button
+            {
+                Text = "Speichern", DialogResult = DialogResult.OK,
+                Location = new System.Drawing.Point(240, y), Width = 90, Height = 30
+            };
+            var btnCancel = new Button
+            {
+                Text = "Abbrechen", DialogResult = DialogResult.Cancel,
+                Location = new System.Drawing.Point(336, y), Width = 90, Height = 30
+            };
+            Controls.Add(btnOk);
+            Controls.Add(btnCancel);
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+
+            // Load existing data
+            if (existing != null)
+            {
+                txtName.Text = existing.Name;
+                cmbProtocol.SelectedItem = existing.Protocol;
+                txtUsername.Text = existing.Username;
+                if (!string.IsNullOrEmpty(existing.EncryptedPass) && SessionKey.IsSet)
+                    txtPassword.Text = CredentialStore.Decrypt(existing.EncryptedPass);
+                txtPort.Text = existing.Port?.ToString() ?? "";
+                nudPriority.Value = existing.Priority;
+                if (!string.IsNullOrEmpty(existing.DeviceTypes))
+                {
+                    var ids = existing.DeviceTypes.Split(',').Select(s => s.Trim()).ToHashSet();
+                    for (int i = 0; i < clbDeviceTypes.Items.Count; i++)
+                    {
+                        var item = (DeviceTypeItem)clbDeviceTypes.Items[i];
+                        if (ids.Contains(((int)item.Type).ToString()))
+                            clbDeviceTypes.SetItemChecked(i, true);
+                    }
+                }
+            }
+
+            UpdatePortPlaceholder();
+
+            btnOk.Click += (s, e) =>
+            {
+                if (string.IsNullOrWhiteSpace(txtName.Text))
+                {
+                    MessageBox.Show("Name darf nicht leer sein.", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+                if (string.IsNullOrWhiteSpace(txtPassword.Text))
+                {
+                    MessageBox.Show("Passwort darf nicht leer sein.", "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+
+                var checkedTypes = new List<string>();
+                for (int i = 0; i < clbDeviceTypes.Items.Count; i++)
+                    if (clbDeviceTypes.GetItemChecked(i))
+                        checkedTypes.Add(((int)((DeviceTypeItem)clbDeviceTypes.Items[i]).Type).ToString());
+
+                Template = new CredentialTemplate
+                {
+                    ID            = existing?.ID ?? 0,
+                    Name          = txtName.Text.Trim(),
+                    Protocol      = cmbProtocol.SelectedItem.ToString(),
+                    Username      = txtUsername.Text.Trim(),
+                    EncryptedPass = CredentialStore.Encrypt(txtPassword.Text),
+                    Port          = int.TryParse(txtPort.Text, out int p) ? (int?)p : null,
+                    DeviceTypes   = checkedTypes.Count > 0 ? string.Join(",", checkedTypes) : null,
+                    Priority      = (int)nudPriority.Value
+                };
+            };
+        }
+
+        private void UpdatePortPlaceholder()
+        {
+            var temp = new CredentialTemplate { Protocol = cmbProtocol.SelectedItem?.ToString() ?? "SSH" };
+            if (lblPortHint != null)
+                lblPortHint.Text = $"(Standard: {temp.GetDefaultPort()})";
+        }
+
+        private class DeviceTypeItem
+        {
+            public DeviceType Type { get; }
+            public DeviceTypeItem(DeviceType type) { Type = type; }
+            public override string ToString() => $"{DeviceTypeHelper.GetIcon(Type)} {DeviceTypeHelper.GetLabel(Type)}";
+        }
+    }
+
+    // =========================================================
+    // === CREDENTIAL TEMPLATE LIST DIALOG ===
+    // =========================================================
+    public class CredentialTemplateDialog : Form
+    {
+        private readonly DatabaseManager _db;
+        private DataGridView grid;
+
+        public CredentialTemplateDialog(DatabaseManager db)
+        {
+            _db = db;
+            Text = "Passwort-Vorlagen verwalten";
+            Width = 820; Height = 480;
+            StartPosition = FormStartPosition.CenterParent;
+            Font = new System.Drawing.Font("Segoe UI", 9);
+            MinimizeBox = false;
+
+            grid = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                RowHeadersVisible = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                BackgroundColor = SystemColors.Window,
+                BorderStyle = BorderStyle.None,
+                EnableHeadersVisualStyles = false,
+                MultiSelect = false
+            };
+            grid.ColumnHeadersDefaultCellStyle.BackColor = System.Drawing.Color.FromArgb(245, 245, 245);
+            grid.ColumnHeadersDefaultCellStyle.Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold);
+
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ID", HeaderText = "ID", Width = 40, Visible = false });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Name", FillWeight = 25 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Protocol", HeaderText = "Protokoll", FillWeight = 12 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Username", HeaderText = "Benutzer", FillWeight = 15 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Password", HeaderText = "Passwort", FillWeight = 10 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Port", HeaderText = "Port", FillWeight = 8 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DeviceTypes", HeaderText = "Gerätetypen", FillWeight = 20 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Priority", HeaderText = "Prio", FillWeight = 6 });
+
+            var btnPanel = new Panel { Dock = DockStyle.Bottom, Height = 44 };
+            var btnAdd = new Button { Text = "Hinzufügen", Location = new System.Drawing.Point(6, 8), Width = 110, Height = 28 };
+            var btnEdit = new Button { Text = "Bearbeiten", Location = new System.Drawing.Point(122, 8), Width = 110, Height = 28 };
+            var btnDelete = new Button { Text = "Löschen", Location = new System.Drawing.Point(238, 8), Width = 110, Height = 28, BackColor = System.Drawing.Color.FromArgb(255, 220, 220) };
+            var btnClose = new Button { Text = "Schließen", Location = new System.Drawing.Point(694, 8), Width = 100, Height = 28, DialogResult = DialogResult.Cancel };
+
+            btnAdd.Click += (s, e) => AddTemplate();
+            btnEdit.Click += (s, e) => EditTemplate();
+            btnDelete.Click += (s, e) => DeleteTemplate();
+            grid.CellDoubleClick += (s, e) => { if (e.RowIndex >= 0) EditTemplate(); };
+
+            btnPanel.Controls.AddRange(new Control[] { btnAdd, btnEdit, btnDelete, btnClose });
+            Controls.Add(grid);
+            Controls.Add(btnPanel);
+            CancelButton = btnClose;
+
+            EnsureMasterPassword();
+            LoadTemplates();
+        }
+
+        private void EnsureMasterPassword()
+        {
+            if (!SessionKey.IsSet)
+            {
+                using (var dlg = new CredentialPasswordDialog())
+                {
+                    if (dlg.ShowDialog(this) != DialogResult.OK)
+                    {
+                        Close();
+                        return;
+                    }
+                }
+            }
+        }
+
+        private void LoadTemplates()
+        {
+            grid.Rows.Clear();
+            foreach (var t in _db.GetCredentialTemplates())
+            {
+                string types = "";
+                if (!string.IsNullOrEmpty(t.DeviceTypes))
+                {
+                    types = string.Join(", ", t.DeviceTypes.Split(',')
+                        .Select(s => int.TryParse(s.Trim(), out int id) ? DeviceTypeHelper.GetLabel((DeviceType)id) : s));
+                }
+                else
+                {
+                    types = "(alle)";
+                }
+                grid.Rows.Add(t.ID, t.Name, t.Protocol, t.Username, "••••••",
+                    t.Port?.ToString() ?? "Standard", types, t.Priority);
+            }
+        }
+
+        private void AddTemplate()
+        {
+            using (var dlg = new CredentialTemplateEditDialog())
+            {
+                if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Template != null)
+                {
+                    _db.AddCredentialTemplate(dlg.Template);
+                    LoadTemplates();
+                }
+            }
+        }
+
+        private void EditTemplate()
+        {
+            if (grid.CurrentRow == null) return;
+            int id = Convert.ToInt32(grid.CurrentRow.Cells["ID"].Value);
+            var template = _db.GetCredentialTemplates().FirstOrDefault(t => t.ID == id);
+            if (template == null) return;
+
+            using (var dlg = new CredentialTemplateEditDialog(template))
+            {
+                if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Template != null)
+                {
+                    _db.UpdateCredentialTemplate(dlg.Template);
+                    LoadTemplates();
+                }
+            }
+        }
+
+        private void DeleteTemplate()
+        {
+            if (grid.CurrentRow == null) return;
+            string name = grid.CurrentRow.Cells["Name"].Value?.ToString();
+            if (MessageBox.Show($"Vorlage \"{name}\" wirklich löschen?\n\nZugewiesene Geräte werden zurückgesetzt.",
+                "Löschen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return;
+
+            int id = Convert.ToInt32(grid.CurrentRow.Cells["ID"].Value);
+            _db.DeleteCredentialTemplate(id);
+            LoadTemplates();
+        }
+    }
+
+    // =========================================================
+    // === CREDENTIAL SCAN PROGRESS DIALOG ===
+    // =========================================================
+    public class CredentialScanDialog : Form
+    {
+        private readonly DatabaseManager _db;
+        private readonly List<DatabaseDevice> _devices;
+        private ProgressBar progressBar;
+        private RichTextBox logBox;
+        private CheckBox chkRetest;
+        private Button btnStart, btnCancel;
+        private Label lblStatus;
+        private CredentialScanner _scanner;
+        private int _successCount;
+
+        public CredentialScanDialog(DatabaseManager db, List<DatabaseDevice> devices)
+        {
+            _db = db;
+            _devices = devices;
+            Text = "Zugangsdaten testen";
+            Width = 700; Height = 500;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false; MinimizeBox = false;
+            Font = new System.Drawing.Font("Segoe UI", 9);
+
+            lblStatus = new Label
+            {
+                Text = $"{_devices.Count} Geräte bereit zum Testen",
+                Dock = DockStyle.Top, Height = 28,
+                TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0),
+                Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold)
+            };
+
+            progressBar = new ProgressBar { Dock = DockStyle.Top, Height = 24, Maximum = _devices.Count };
+
+            chkRetest = new CheckBox
+            {
+                Text = "Bereits getestete Geräte erneut prüfen",
+                Dock = DockStyle.Top, Height = 26,
+                Padding = new Padding(8, 4, 0, 0)
+            };
+
+            logBox = new RichTextBox
+            {
+                Dock = DockStyle.Fill, ReadOnly = true,
+                Font = new System.Drawing.Font("Consolas", 9),
+                BackColor = System.Drawing.Color.FromArgb(30, 30, 30),
+                ForeColor = System.Drawing.Color.White
+            };
+
+            var btnPanel = new Panel { Dock = DockStyle.Bottom, Height = 44 };
+            btnStart = new Button
+            {
+                Text = "🔑 Test starten", Location = new System.Drawing.Point(6, 8),
+                Width = 140, Height = 28,
+                BackColor = System.Drawing.Color.FromArgb(220, 240, 220),
+                Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold)
+            };
+            btnCancel = new Button
+            {
+                Text = "Schließen", Location = new System.Drawing.Point(574, 8),
+                Width = 100, Height = 28, DialogResult = DialogResult.Cancel
+            };
+
+            btnStart.Click += async (s, e) => await StartScan();
+            btnPanel.Controls.AddRange(new Control[] { btnStart, btnCancel });
+
+            Controls.Add(logBox);
+            Controls.Add(progressBar);
+            Controls.Add(chkRetest);
+            Controls.Add(lblStatus);
+            Controls.Add(btnPanel);
+            CancelButton = btnCancel;
+        }
+
+        private async System.Threading.Tasks.Task StartScan()
+        {
+            if (!SessionKey.IsSet)
+            {
+                using (var dlg = new CredentialPasswordDialog())
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            }
+
+            var templates = _db.GetCredentialTemplates();
+            if (templates.Count == 0)
+            {
+                MessageBox.Show("Keine Passwort-Vorlagen vorhanden.\n\nBitte zuerst Vorlagen anlegen.",
+                    "Keine Vorlagen", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            btnStart.Enabled = false;
+            chkRetest.Enabled = false;
+            btnCancel.Text = "Abbrechen";
+            _successCount = 0;
+            logBox.Clear();
+            progressBar.Value = 0;
+
+            _scanner = new CredentialScanner(5);
+
+            _scanner.DeviceScanned += result =>
+            {
+                if (InvokeRequired)
+                {
+                    Invoke(new Action(() => OnDeviceScanned(result)));
+                    return;
+                }
+                OnDeviceScanned(result);
+            };
+
+            _scanner.ProgressChanged += (current, total) =>
+            {
+                if (InvokeRequired)
+                {
+                    Invoke(new Action(() =>
+                    {
+                        progressBar.Value = current;
+                        lblStatus.Text = $"Fortschritt: {current}/{total} Geräte";
+                    }));
+                    return;
+                }
+                progressBar.Value = current;
+                lblStatus.Text = $"Fortschritt: {current}/{total} Geräte";
+            };
+
+            btnCancel.Click += (s, e) => _scanner.Cancel();
+
+            var results = await _scanner.ScanDevicesAsync(_devices, templates, chkRetest.Checked);
+
+            // Save successful matches to DB
+            foreach (var r in results.Where(r => r.Success && r.MatchedTemplate != null))
+                _db.SetDeviceCredential(r.Device.ID, r.MatchedTemplate.ID);
+
+            lblStatus.Text = $"Fertig: {_successCount}/{_devices.Count} Geräte authentifiziert";
+            btnStart.Enabled = true;
+            chkRetest.Enabled = true;
+            btnCancel.Text = "Schließen";
+        }
+
+        private void OnDeviceScanned(CredentialScanner.ScanResult result)
+        {
+            string host = !string.IsNullOrEmpty(result.Device.Hostname) ? result.Device.Hostname : result.Device.IP;
+            if (result.Success)
+            {
+                _successCount++;
+                AppendLog($"✔ {result.Device.IP} ({host}) — {result.Message}\n", System.Drawing.Color.LightGreen);
+            }
+            else
+            {
+                AppendLog($"✘ {result.Device.IP} ({host}) — {result.Message}\n", System.Drawing.Color.FromArgb(255, 150, 150));
+            }
+        }
+
+        private void AppendLog(string text, System.Drawing.Color color)
+        {
+            logBox.SelectionStart = logBox.TextLength;
+            logBox.SelectionLength = 0;
+            logBox.SelectionColor = color;
+            logBox.AppendText(text);
+            logBox.ScrollToCaret();
+        }
+    }
+
 }

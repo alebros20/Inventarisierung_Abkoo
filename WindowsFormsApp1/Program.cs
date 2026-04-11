@@ -168,7 +168,14 @@ namespace NmapInventory
             refreshButton.Text = "🔄 Aktualisieren";
             refreshButton.Click += (s, e) => RefreshAllViews();
 
-            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton, refreshButton });
+            var credentialButton = new Button { Location = new Point(932, 42), Width = 160, Height = 28, BackColor = SystemColors.Control, Font = new Font("Segoe UI", 10) };
+            credentialButton.Text = "🔑 Passwort-Vorlagen";
+            credentialButton.Click += (s, e) => {
+                using (var dlg = new CredentialTemplateDialog(dbManager))
+                    dlg.ShowDialog(this);
+            };
+
+            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, remoteHardwareButton, exportButton, snmpScanButton, snmpSettingsButton, refreshButton, credentialButton });
             return topPanel;
         }
 
@@ -491,8 +498,28 @@ namespace NmapInventory
             var deleteBtn = CreateButton("Löschen", 290, Color.IndianRed, DeleteNode);
             treeButtonPanel.Controls.AddRange(new Control[] { addCustomerBtn, addLocationBtn, addDeptBtn, deleteBtn });
 
+            var treeActionPanel = new Panel { Dock = DockStyle.Top, Height = 36 };
+            var btnTestCreds = new Button
+            {
+                Text = "🔑 Zugangsdaten testen",
+                Location = new Point(5, 4), Width = 170, Height = 26,
+                BackColor = Color.FromArgb(220, 235, 255),
+                Font = new Font("Segoe UI", 8, FontStyle.Bold)
+            };
+            btnTestCreds.Click += (s, e) => StartCredentialScan();
+            var btnResetCreds = new Button
+            {
+                Text = "↺ Zugangsdaten zurücksetzen",
+                Location = new Point(180, 4), Width = 190, Height = 26,
+                BackColor = Color.FromArgb(255, 235, 210),
+                Font = new Font("Segoe UI", 8)
+            };
+            btnResetCreds.Click += (s, e) => ResetSelectedDeviceCredential();
+            treeActionPanel.Controls.AddRange(new Control[] { btnTestCreds, btnResetCreds });
+
             var leftPanel = new Panel { Dock = DockStyle.Fill };
             leftPanel.Controls.Add(treeView);
+            leftPanel.Controls.Add(treeActionPanel);
             leftPanel.Controls.Add(treeButtonPanel);
             split.Panel1.Controls.Add(leftPanel);
 
@@ -1142,21 +1169,26 @@ namespace NmapInventory
             try
             {
                 // Sheet 1: Geräte
-                calcExportButton.Text = "Exportiere... (1/3) Geräte";
+                calcExportButton.Text = "Exportiere... (1/4) Geräte";
                 Application.DoEvents();
                 var dtGeraete = dbManager.GetViewData("Inventar_Geraete");
 
-                // Sheet 2: Software
-                calcExportButton.Text = "Exportiere... (2/3) Software";
+                // Sheet 2: Hardware (geparst in einzelne Spalten)
+                calcExportButton.Text = "Exportiere... (2/4) Hardware";
+                Application.DoEvents();
+                var dtHardware = dbManager.GetHardwareExportData();
+
+                // Sheet 3: Software
+                calcExportButton.Text = "Exportiere... (3/4) Software";
                 Application.DoEvents();
                 var dtSoftware = dbManager.GetViewData("Inventar_Software");
 
-                // Sheet 3: Ports
-                calcExportButton.Text = "Exportiere... (3/3) Ports";
+                // Sheet 4: Ports
+                calcExportButton.Text = "Exportiere... (4/4) Ports";
                 Application.DoEvents();
                 var dtPorts = dbManager.GetViewData("Inventar_Ports");
 
-                if (dtGeraete.Rows.Count == 0 && dtSoftware.Rows.Count == 0 && dtPorts.Rows.Count == 0)
+                if (dtGeraete.Rows.Count == 0 && dtSoftware.Rows.Count == 0 && dtPorts.Rows.Count == 0 && dtHardware.Rows.Count == 0)
                 {
                     MessageBox.Show("Keine Daten vorhanden.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
@@ -1168,6 +1200,7 @@ namespace NmapInventory
                 using (var wb = new XLWorkbook())
                 {
                     AddSheet(wb, "Geräte", dtGeraete);
+                    AddSheet(wb, "Hardware", dtHardware);
                     AddSheet(wb, "Software", dtSoftware);
                     AddSheet(wb, "Ports", dtPorts);
                     wb.SaveAs(filePath);
@@ -1359,6 +1392,71 @@ namespace NmapInventory
                     MessageBox.Show("Fehler beim Import:\n" + ex.Message, "Fehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
+        }
+
+        // =========================================================
+        // === CREDENTIAL SCAN ===
+        // =========================================================
+
+        private void StartCredentialScan()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+
+            List<DatabaseDevice> devices;
+            if (nodeData?.Type == "Customer")
+                devices = dbManager.GetDevicesByCustomer(nodeData.ID);
+            else if (nodeData?.Type == "Location")
+                devices = dbManager.GetDevicesByLocationRecursive(nodeData.ID);
+            else
+            {
+                MessageBox.Show("Bitte wähle einen Kunden oder Standort im Baum aus.",
+                    "Hinweis", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (devices.Count == 0)
+            {
+                MessageBox.Show("Keine Geräte an diesem Standort/Kunden gefunden.",
+                    "Keine Geräte", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var dlg = new CredentialScanDialog(dbManager, devices))
+                dlg.ShowDialog(this);
+        }
+
+        private void ResetSelectedDeviceCredential()
+        {
+            var treeView = FindControl<TreeView>("customerTreeView");
+            var nodeData = treeView?.SelectedNode?.Tag as NodeData;
+
+            List<DatabaseDevice> devices = null;
+            if (nodeData?.Type == "Customer")
+                devices = dbManager.GetDevicesByCustomer(nodeData.ID);
+            else if (nodeData?.Type == "Location")
+                devices = dbManager.GetDevicesByLocationRecursive(nodeData.ID);
+            else
+            {
+                MessageBox.Show("Bitte wähle einen Kunden oder Standort im Baum aus.", "Hinweis");
+                return;
+            }
+
+            int count = devices.Count(d => d.CredentialTemplateID.HasValue);
+            if (count == 0)
+            {
+                MessageBox.Show("Keine Geräte mit Zugangsdaten gefunden.", "Info");
+                return;
+            }
+
+            if (MessageBox.Show($"Zugangsdaten für {count} Geräte zurücksetzen?", "Bestätigen",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+
+            foreach (var d in devices.Where(d => d.CredentialTemplateID.HasValue))
+                dbManager.ResetDeviceCredential(d.ID);
+
+            statusLabel.Text = $"✔ Zugangsdaten für {count} Geräte zurückgesetzt";
         }
 
         // =========================================================

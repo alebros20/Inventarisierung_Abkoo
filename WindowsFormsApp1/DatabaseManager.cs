@@ -117,6 +117,24 @@ namespace NmapInventory
                 TryAlterTable(conn, "ALTER TABLE DeviceSoftware ADD COLUMN LastUpdate TEXT");
                 TryAlterTable(conn, "ALTER TABLE DeviceSoftware ADD COLUMN DeviceID INTEGER");
                 TryAlterTable(conn, "ALTER TABLE DeviceHardwareInfo ADD COLUMN IPAddress TEXT");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN CredentialTemplateID INTEGER");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN CredentialVerified DATETIME");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN UniqueID TEXT");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN UniqueIDSource TEXT");
+
+                using (var diCmd = new SQLiteCommand(@"
+                    CREATE TABLE IF NOT EXISTS DeviceInterfaces (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        MacAddress TEXT NOT NULL,
+                        IPAddress TEXT,
+                        InterfaceType TEXT,
+                        IsPrimary INTEGER DEFAULT 0,
+                        FirstSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(DeviceID) REFERENCES Devices(ID) ON DELETE CASCADE
+                    )", conn))
+                    diCmd.ExecuteNonQuery();
+                TryAlterTable(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_device_interfaces_mac ON DeviceInterfaces(DeviceID, MacAddress)");
             }
         }
 
@@ -890,6 +908,40 @@ namespace NmapInventory
                 // UNIQUE-Index auf DeviceSoftware (verhindert Duplikate)
                 TryAlterTable(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_device_software_unique ON DeviceSoftware(DeviceID, Name)");
 
+                using (var ctCmd = new SQLiteCommand(@"
+                    CREATE TABLE IF NOT EXISTS CredentialTemplates (
+                        ID              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        Name            TEXT NOT NULL,
+                        Protocol        TEXT NOT NULL,
+                        Username        TEXT,
+                        EncryptedPass   TEXT NOT NULL,
+                        Port            INTEGER,
+                        DeviceTypes     TEXT,
+                        Priority        INTEGER DEFAULT 0,
+                        Created         DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )", conn))
+                    ctCmd.ExecuteNonQuery();
+
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN CredentialTemplateID INTEGER");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN CredentialVerified DATETIME");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN UniqueID TEXT");
+                TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN UniqueIDSource TEXT");
+
+                using (var diCmd = new SQLiteCommand(@"
+                    CREATE TABLE IF NOT EXISTS DeviceInterfaces (
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceID INTEGER NOT NULL,
+                        MacAddress TEXT NOT NULL,
+                        IPAddress TEXT,
+                        InterfaceType TEXT,
+                        IsPrimary INTEGER DEFAULT 0,
+                        FirstSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(DeviceID) REFERENCES Devices(ID) ON DELETE CASCADE
+                    )", conn))
+                    diCmd.ExecuteNonQuery();
+                TryAlterTable(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_device_interfaces_mac ON DeviceInterfaces(DeviceID, MacAddress)");
+                TryAlterTable(conn, "CREATE INDEX IF NOT EXISTS idx_unique_id ON Devices(UniqueID)");
+
                 // ── Inventar_* als VIEWs (immer live, kein Refresh nötig) ──
                 // Alte Views entfernen, dann frische Views anlegen
                 // WICHTIG: Jedes Statement einzeln ausführen, da SQLite sonst einen Fehler wirft
@@ -897,6 +949,7 @@ namespace NmapInventory
                 TryDropViewSafely(conn, "Inventar_Geraete");
                 TryDropViewSafely(conn, "Inventar_Software");
                 TryDropViewSafely(conn, "Inventar_Ports");
+                TryDropViewSafely(conn, "Inventar_Hardware");
 
                 using (var viewCmd = new SQLiteCommand(conn))
                 {
@@ -904,9 +957,10 @@ namespace NmapInventory
                     viewCmd.CommandText = @"
                         CREATE VIEW Inventar_Geraete AS
                         SELECT
-                            c.ID  AS KundeID,     c.Name AS KundeName,
+                            c.ID  AS KundeID,     d.ID  AS GeraetID,
+                            c.Name AS KundeName,
                             l.ID  AS StandortID,  l.Name AS StandortName,
-                            d.ID  AS GeraetID,    d.IP,  d.Hostname,  d.MacAddress,
+                            d.IP,  d.Hostname,  d.MacAddress,
                             d.DeviceType AS GeraetTyp,
                             CASE d.DeviceType
                                 WHEN 1  THEN 'Windows PC'    WHEN 2  THEN 'Windows Server'
@@ -930,9 +984,8 @@ namespace NmapInventory
                     viewCmd.CommandText = @"
                         CREATE VIEW Inventar_Software AS
                         SELECT
-                            c.ID  AS KundeID,     c.Name AS KundeName,
-                            l.ID  AS StandortID,  l.Name AS StandortName,
-                            d.ID  AS GeraetID,    d.IP,  d.Hostname,  d.MacAddress,
+                            sw.ID AS SoftwareID,  d.ID  AS GeraetID,
+                            d.IP,  d.Hostname,  d.MacAddress,
                             d.DeviceType AS GeraetTyp,
                             CASE d.DeviceType
                                 WHEN 1  THEN 'Windows PC'    WHEN 2  THEN 'Windows Server'
@@ -943,23 +996,20 @@ namespace NmapInventory
                                 WHEN 11 THEN 'macOS'         WHEN 12 THEN 'Laptop'
                                 ELSE 'Unbekannt'
                             END AS GeraetTypName,
-                            sw.ID AS SoftwareID, sw.Name AS SoftwareName,
+                            sw.Name AS SoftwareName,
                             sw.Version AS SoftwareVersion,
                             sw.Publisher AS Hersteller, sw.InstallDate AS InstallDatum,
                             sw.Source AS Quelle
                         FROM DeviceSoftware sw
-                        JOIN Devices d         ON d.ID = sw.DeviceID
-                        LEFT JOIN Locations l  ON l.ID = d.StandortID
-                        LEFT JOIN Customers c  ON c.ID = l.CustomerID;";
+                        JOIN Devices d         ON d.ID = sw.DeviceID;";
                     viewCmd.ExecuteNonQuery();
 
                     // Create Inventar_Ports
                     viewCmd.CommandText = @"
                         CREATE VIEW Inventar_Ports AS
                         SELECT
-                            c.ID  AS KundeID,     c.Name AS KundeName,
-                            l.ID  AS StandortID,  l.Name AS StandortName,
-                            d.ID  AS GeraetID,    d.IP,  d.Hostname,
+                            p.ID AS PortID,       d.ID  AS GeraetID,
+                            d.IP,  d.Hostname,
                             d.DeviceType AS GeraetTyp,
                             CASE d.DeviceType
                                 WHEN 1  THEN 'Windows PC'    WHEN 2  THEN 'Windows Server'
@@ -970,12 +1020,32 @@ namespace NmapInventory
                                 WHEN 11 THEN 'macOS'         WHEN 12 THEN 'Laptop'
                                 ELSE 'Unbekannt'
                             END AS GeraetTypName,
-                            p.ID AS PortID, p.Port, p.Protocol AS Protokoll,
+                            p.Port, p.Protocol AS Protokoll,
                             p.State AS Status, p.Service AS Dienst, p.Version
                         FROM DevicePorts p
-                        JOIN Devices d         ON d.ID = p.DeviceID
-                        LEFT JOIN Locations l  ON l.ID = d.StandortID
-                        LEFT JOIN Customers c  ON c.ID = l.CustomerID;";
+                        JOIN Devices d         ON d.ID = p.DeviceID;";
+                    viewCmd.ExecuteNonQuery();
+
+                    // Create Inventar_Hardware
+                    viewCmd.CommandText = @"
+                        CREATE VIEW Inventar_Hardware AS
+                        SELECT
+                            h.ID AS HardwareID,   d.ID  AS GeraetID,
+                            d.IP,  d.Hostname,  d.MacAddress,
+                            d.DeviceType AS GeraetTyp,
+                            CASE d.DeviceType
+                                WHEN 1  THEN 'Windows PC'    WHEN 2  THEN 'Windows Server'
+                                WHEN 3  THEN 'Linux'         WHEN 4  THEN 'Drucker'
+                                WHEN 5  THEN 'Smartphone'    WHEN 6  THEN 'Tablet'
+                                WHEN 7  THEN 'Netzwerkgerät' WHEN 8  THEN 'NAS'
+                                WHEN 9  THEN 'Smart TV'      WHEN 10 THEN 'IoT-Gerät'
+                                WHEN 11 THEN 'macOS'         WHEN 12 THEN 'Laptop'
+                                ELSE 'Unbekannt'
+                            END AS GeraetTypName,
+                            h.HardwareText,
+                            h.QueryTime AS AbfrageZeit
+                        FROM DeviceHardwareInfo h
+                        JOIN Devices d         ON d.ID = h.DeviceID;";
                     viewCmd.ExecuteNonQuery();
                 }
 
@@ -1816,6 +1886,376 @@ namespace NmapInventory
                     dt.Load(reader);
             }
             return dt;
+        }
+
+        public System.Data.DataTable GetHardwareExportData()
+        {
+            var raw = GetViewData("Inventar_Hardware");
+            var dt = new System.Data.DataTable();
+
+            dt.Columns.Add("HardwareID");
+            dt.Columns.Add("GeraetID");
+            dt.Columns.Add("IP");
+            dt.Columns.Add("Hostname");
+            dt.Columns.Add("GeraetTypName");
+            // Geparste Hardware-Spalten
+            dt.Columns.Add("Computer");
+            dt.Columns.Add("Hersteller");
+            dt.Columns.Add("Modell");
+            dt.Columns.Add("Betriebssystem");
+            dt.Columns.Add("OS Version");
+            dt.Columns.Add("Prozessor");
+            dt.Columns.Add("Kerne / Threads");
+            dt.Columns.Add("RAM");
+            dt.Columns.Add("Laufwerke");
+            dt.Columns.Add("AbfrageZeit");
+
+            foreach (System.Data.DataRow row in raw.Rows)
+            {
+                string text = row["HardwareText"]?.ToString() ?? "";
+                var parsed = ParseHardwareText(text);
+
+                dt.Rows.Add(
+                    row["HardwareID"], row["GeraetID"],
+                    row["IP"], row["Hostname"],
+                    row["GeraetTypName"],
+                    parsed.Computer, parsed.Hersteller, parsed.Modell,
+                    parsed.Betriebssystem, parsed.OSVersion,
+                    parsed.Prozessor, parsed.KerneThreads,
+                    parsed.RAM, parsed.Laufwerke,
+                    row["AbfrageZeit"]
+                );
+            }
+            return dt;
+        }
+
+        private (string Computer, string Hersteller, string Modell,
+                 string Betriebssystem, string OSVersion,
+                 string Prozessor, string KerneThreads,
+                 string RAM, string Laufwerke)
+            ParseHardwareText(string text)
+        {
+            string computer = "", hersteller = "", modell = "";
+            string betriebssystem = "", osVersion = "";
+            string prozessor = "", kerneThreads = "";
+            string ram = "", laufwerke = "";
+
+            if (string.IsNullOrWhiteSpace(text))
+                return (computer, hersteller, modell, betriebssystem, osVersion, prozessor, kerneThreads, ram, laufwerke);
+
+            var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            string currentSection = "";
+
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.Trim();
+                if (line.StartsWith("===") && line.EndsWith("==="))
+                {
+                    currentSection = line.Replace("=", "").Trim().ToLower();
+                    continue;
+                }
+
+                switch (currentSection)
+                {
+                    case "systemübersicht":
+                        if (line.Contains("Computer:"))
+                        {
+                            var parts = System.Text.RegularExpressions.Regex.Split(line, @"\s{2,}");
+                            foreach (var p in parts)
+                            {
+                                var t = p.Trim();
+                                if (t.StartsWith("Computer:")) computer = t.Substring(9).Trim();
+                                else if (t.StartsWith("Hersteller:")) hersteller = t.Substring(11).Trim();
+                                else if (t.StartsWith("Modell:")) modell = t.Substring(7).Trim();
+                            }
+                        }
+                        break;
+
+                    case "betriebssystem":
+                        if (string.IsNullOrEmpty(betriebssystem))
+                        {
+                            var parts = System.Text.RegularExpressions.Regex.Split(line, @"\s{2,}");
+                            betriebssystem = parts[0].Trim();
+                            foreach (var p in parts)
+                            {
+                                var t = p.Trim();
+                                if (t.StartsWith("Version ")) osVersion = t;
+                                else if (t.StartsWith("Build ")) osVersion += " " + t;
+                            }
+                        }
+                        break;
+
+                    case "prozessor":
+                        if (string.IsNullOrEmpty(prozessor))
+                        {
+                            var parts = System.Text.RegularExpressions.Regex.Split(line, @"\s{2,}");
+                            prozessor = parts[0].Trim();
+                            if (parts.Length > 1) kerneThreads = parts[parts.Length - 1].Trim();
+                        }
+                        break;
+
+                    case "ram":
+                        if (string.IsNullOrEmpty(ram))
+                            ram = line.Trim();
+                        break;
+
+                    case "laufwerke":
+                        if (!string.IsNullOrWhiteSpace(line))
+                            laufwerke += (laufwerke.Length > 0 ? " | " : "") + line.Trim();
+                        break;
+                }
+            }
+
+            return (computer, hersteller, modell, betriebssystem, osVersion, prozessor, kerneThreads, ram, laufwerke);
+        }
+
+        // =========================================================
+        // === CREDENTIAL TEMPLATES ===
+        // =========================================================
+
+        public List<CredentialTemplate> GetCredentialTemplates()
+        {
+            var list = new List<CredentialTemplate>();
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand(
+                    "SELECT ID, Name, Protocol, Username, EncryptedPass, Port, DeviceTypes, Priority, Created FROM CredentialTemplates ORDER BY Priority, Name", conn))
+                using (var r = cmd.ExecuteReader())
+                    while (r.Read())
+                        list.Add(new CredentialTemplate
+                        {
+                            ID            = Convert.ToInt32(r["ID"]),
+                            Name          = r["Name"]?.ToString(),
+                            Protocol      = r["Protocol"]?.ToString(),
+                            Username      = r["Username"]?.ToString(),
+                            EncryptedPass = r["EncryptedPass"]?.ToString(),
+                            Port          = r["Port"] is DBNull ? (int?)null : Convert.ToInt32(r["Port"]),
+                            DeviceTypes   = r["DeviceTypes"]?.ToString(),
+                            Priority      = Convert.ToInt32(r["Priority"]),
+                            Created       = r["Created"]?.ToString()
+                        });
+            }
+            return list;
+        }
+
+        public void AddCredentialTemplate(CredentialTemplate t)
+        {
+            ExecuteNonQuery(
+                "INSERT INTO CredentialTemplates (Name, Protocol, Username, EncryptedPass, Port, DeviceTypes, Priority) VALUES (@Name, @Protocol, @Username, @EncryptedPass, @Port, @DeviceTypes, @Priority)",
+                new[] {
+                    ("@Name", t.Name), ("@Protocol", t.Protocol), ("@Username", t.Username ?? ""),
+                    ("@EncryptedPass", t.EncryptedPass), ("@Port", t.Port?.ToString() ?? (string)null),
+                    ("@DeviceTypes", t.DeviceTypes ?? (string)null), ("@Priority", t.Priority.ToString())
+                });
+        }
+
+        public void UpdateCredentialTemplate(CredentialTemplate t)
+        {
+            ExecuteNonQuery(
+                "UPDATE CredentialTemplates SET Name=@Name, Protocol=@Protocol, Username=@Username, EncryptedPass=@EncryptedPass, Port=@Port, DeviceTypes=@DeviceTypes, Priority=@Priority WHERE ID=@ID",
+                new[] {
+                    ("@ID", t.ID.ToString()), ("@Name", t.Name), ("@Protocol", t.Protocol),
+                    ("@Username", t.Username ?? ""), ("@EncryptedPass", t.EncryptedPass),
+                    ("@Port", t.Port?.ToString() ?? (string)null),
+                    ("@DeviceTypes", t.DeviceTypes ?? (string)null), ("@Priority", t.Priority.ToString())
+                });
+        }
+
+        public void DeleteCredentialTemplate(int id)
+        {
+            ExecuteNonQuery("UPDATE Devices SET CredentialTemplateID = NULL, CredentialVerified = NULL WHERE CredentialTemplateID = @ID",
+                new[] { ("@ID", id.ToString()) });
+            ExecuteNonQuery("DELETE FROM CredentialTemplates WHERE ID=@ID",
+                new[] { ("@ID", id.ToString()) });
+        }
+
+        public void SetDeviceCredential(int deviceId, int templateId)
+        {
+            ExecuteNonQuery(
+                "UPDATE Devices SET CredentialTemplateID=@TID, CredentialVerified=@Now WHERE ID=@DID",
+                new[] { ("@TID", templateId.ToString()), ("@Now", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")), ("@DID", deviceId.ToString()) });
+        }
+
+        public void ResetDeviceCredential(int deviceId)
+        {
+            ExecuteNonQuery(
+                "UPDATE Devices SET CredentialTemplateID=NULL, CredentialVerified=NULL WHERE ID=@DID",
+                new[] { ("@DID", deviceId.ToString()) });
+        }
+
+        // ── Geräte-Eindeutigkeit (UniqueID) ─────────────────────
+
+        public void SetDeviceUniqueID(int deviceId, string uniqueId, string source)
+        {
+            ExecuteNonQuery(
+                "UPDATE Devices SET UniqueID=@UID, UniqueIDSource=@SRC WHERE ID=@DID",
+                new[] { ("@UID", uniqueId), ("@SRC", source), ("@DID", deviceId.ToString()) });
+        }
+
+        /// <summary>
+        /// Sucht ein Gerät anhand der UniqueID. Gibt die DeviceID zurück oder -1.
+        /// </summary>
+        public int FindDeviceByUniqueID(string uniqueId)
+        {
+            if (string.IsNullOrEmpty(uniqueId)) return -1;
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE UniqueID = @UID LIMIT 1", conn))
+                {
+                    cmd.Parameters.AddWithValue("@UID", uniqueId);
+                    var r = cmd.ExecuteScalar();
+                    return r != null ? Convert.ToInt32(r) : -1;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Fügt ein Netzwerk-Interface (MAC/IP) zu einem Gerät hinzu. Duplikate werden ignoriert.
+        /// </summary>
+        public void AddDeviceInterface(int deviceId, string mac, string ip, string interfaceType, bool isPrimary = false)
+        {
+            if (string.IsNullOrWhiteSpace(mac)) return;
+            mac = mac.Trim().ToUpperInvariant();
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand(@"
+                    INSERT OR IGNORE INTO DeviceInterfaces (DeviceID, MacAddress, IPAddress, InterfaceType, IsPrimary)
+                    VALUES (@DID, @MAC, @IP, @Type, @Pri)", conn))
+                {
+                    cmd.Parameters.AddWithValue("@DID", deviceId);
+                    cmd.Parameters.AddWithValue("@MAC", mac);
+                    cmd.Parameters.AddWithValue("@IP", ip ?? "");
+                    cmd.Parameters.AddWithValue("@Type", interfaceType ?? "");
+                    cmd.Parameters.AddWithValue("@Pri", isPrimary ? 1 : 0);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public List<DeviceInterface> GetDeviceInterfaces(int deviceId)
+        {
+            var list = new List<DeviceInterface>();
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("SELECT * FROM DeviceInterfaces WHERE DeviceID=@DID ORDER BY IsPrimary DESC", conn))
+                {
+                    cmd.Parameters.AddWithValue("@DID", deviceId);
+                    using (var r = cmd.ExecuteReader())
+                        while (r.Read())
+                            list.Add(new DeviceInterface
+                            {
+                                ID = Convert.ToInt32(r["ID"]),
+                                DeviceID = Convert.ToInt32(r["DeviceID"]),
+                                MacAddress = r["MacAddress"]?.ToString(),
+                                IPAddress = r["IPAddress"]?.ToString(),
+                                InterfaceType = r["InterfaceType"]?.ToString(),
+                                IsPrimary = Convert.ToInt32(r["IsPrimary"]) == 1
+                            });
+                }
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// Zusammenführung: Verschiebt alle Referenzen von sourceDeviceId auf targetDeviceId und löscht das Quellgerät.
+        /// </summary>
+        public void MergeDevices(int targetDeviceId, int sourceDeviceId)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var tx = conn.BeginTransaction())
+                {
+                    // Interfaces vom Quellgerät übernehmen
+                    using (var cmd = new SQLiteCommand(@"
+                        INSERT OR IGNORE INTO DeviceInterfaces (DeviceID, MacAddress, IPAddress, InterfaceType)
+                        SELECT @TID, MacAddress, IPAddress, InterfaceType FROM DeviceInterfaces WHERE DeviceID=@SID", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@TID", targetDeviceId);
+                        cmd.Parameters.AddWithValue("@SID", sourceDeviceId);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    // MAC des Quellgeräts als Interface übernehmen
+                    using (var cmd = new SQLiteCommand(@"
+                        INSERT OR IGNORE INTO DeviceInterfaces (DeviceID, MacAddress, IPAddress)
+                        SELECT @TID, MacAddress, IP FROM Devices WHERE ID=@SID AND MacAddress IS NOT NULL", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@TID", targetDeviceId);
+                        cmd.Parameters.AddWithValue("@SID", sourceDeviceId);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    // Ports, Software, Hardware, ScanHistory → Zielgerät
+                    string[] tables = { "DevicePorts", "DeviceSoftware", "DeviceHardwareInfo", "DeviceScanHistory", "DeviceNmapDetails", "DeviceMacHistory" };
+                    foreach (var table in tables)
+                    {
+                        using (var cmd = new SQLiteCommand($"UPDATE {table} SET DeviceID=@TID WHERE DeviceID=@SID", conn))
+                        {
+                            cmd.Parameters.AddWithValue("@TID", targetDeviceId);
+                            cmd.Parameters.AddWithValue("@SID", sourceDeviceId);
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+
+                    // LocationDevices aktualisieren
+                    using (var cmd = new SQLiteCommand(@"
+                        UPDATE OR IGNORE LocationDevices SET DeviceID=@TID WHERE DeviceID=@SID", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@TID", targetDeviceId);
+                        cmd.Parameters.AddWithValue("@SID", sourceDeviceId);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    // Quellgerät löschen
+                    using (var cmd = new SQLiteCommand("DELETE FROM Devices WHERE ID=@SID", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@SID", sourceDeviceId);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    tx.Commit();
+                }
+            }
+        }
+
+        public List<DatabaseDevice> GetDevicesByCustomer(int customerId)
+        {
+            var devices = new List<DatabaseDevice>();
+            using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand(@"
+                    SELECT d.ID, d.IP, d.Hostname, d.MacAddress, d.DeviceType, d.Vendor, d.OS,
+                           d.Comment, d.LastSeen, d.CredentialTemplateID, d.CredentialVerified
+                    FROM Devices d
+                    LEFT JOIN Locations l ON l.ID = d.StandortID
+                    WHERE l.CustomerID = @CID
+                    ORDER BY d.IP", conn))
+                {
+                    cmd.Parameters.AddWithValue("@CID", customerId);
+                    using (var r = cmd.ExecuteReader())
+                        while (r.Read())
+                            devices.Add(new DatabaseDevice
+                            {
+                                ID         = Convert.ToInt32(r["ID"]),
+                                IP         = r["IP"]?.ToString(),
+                                Hostname   = r["Hostname"]?.ToString(),
+                                MacAddress = r["MacAddress"]?.ToString(),
+                                DeviceType = r["DeviceType"] is DBNull ? DeviceType.Unbekannt : (DeviceType)Convert.ToInt32(r["DeviceType"]),
+                                Vendor     = r["Vendor"]?.ToString(),
+                                OS         = r["OS"]?.ToString(),
+                                Comment    = r["Comment"]?.ToString(),
+                                Zeitstempel = r["LastSeen"]?.ToString(),
+                                CredentialTemplateID = r["CredentialTemplateID"] is DBNull ? (int?)null : Convert.ToInt32(r["CredentialTemplateID"])
+                            });
+                }
+            }
+            return devices;
         }
 
         // =========================================================
