@@ -589,6 +589,209 @@ namespace NmapInventory
         }
     }
 
+    /// <summary>
+    /// Ermittelt eine eindeutige Geräte-ID per WMI (Windows) oder SSH (Linux/macOS).
+    /// Fallback-Kette: SMBIOS UUID → MachineGuid (Win) / machine-id (Linux) → HW-UUID (Mac) → MAC
+    /// </summary>
+    public class DeviceIdentifier
+    {
+        public class IdentifyResult
+        {
+            public string UniqueID { get; set; }
+            public string Source { get; set; }   // "SMBIOS", "MachineGuid", "machine-id", "HW-UUID", "MAC"
+            public List<(string Mac, string IP, string Type)> Interfaces { get; set; } = new List<(string, string, string)>();
+        }
+
+        private static readonly string[] INVALID_UUIDS = {
+            "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+            "00000000-0000-0000-0000-000000000000",
+            "03000200-0400-0500-0006-000700080009"  // VMware-Dummy
+        };
+
+        /// <summary>
+        /// Ermittelt die UniqueID eines Windows-Geräts via WMI.
+        /// Versucht: 1) SMBIOS UUID  2) MachineGuid aus Registry
+        /// Sammelt zusätzlich alle Netzwerk-Interfaces (MAC + IP).
+        /// </summary>
+        public IdentifyResult IdentifyWindows(string ip, string username, string password)
+        {
+            var result = new IdentifyResult();
+            try
+            {
+                var options = HardwareManager.BuildConnectionOptions(username, password);
+                var scope = new ManagementScope($@"\\{ip}\root\cimv2", options)
+                {
+                    Options = { Timeout = TimeSpan.FromSeconds(15) }
+                };
+                scope.Connect();
+
+                // 1) SMBIOS UUID von Win32_ComputerSystemProduct
+                try
+                {
+                    using (var searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT UUID FROM Win32_ComputerSystemProduct")))
+                    foreach (ManagementObject o in searcher.Get())
+                    {
+                        string uuid = o["UUID"]?.ToString()?.Trim().ToUpperInvariant();
+                        if (!string.IsNullOrEmpty(uuid) && !IsInvalidUUID(uuid))
+                        {
+                            result.UniqueID = uuid;
+                            result.Source = "SMBIOS";
+                            break;
+                        }
+                    }
+                }
+                catch { }
+
+                // 2) Fallback: MachineGuid aus Registry (via StdRegProv)
+                if (string.IsNullOrEmpty(result.UniqueID))
+                {
+                    try
+                    {
+                        var regScope = new ManagementScope($@"\\{ip}\root\default", options)
+                        {
+                            Options = { Timeout = TimeSpan.FromSeconds(10) }
+                        };
+                        regScope.Connect();
+                        var regClass = new ManagementClass(regScope, new ManagementPath("StdRegProv"), null);
+                        var inParams = regClass.GetMethodParameters("GetStringValue");
+                        inParams["hDefKey"] = 0x80000002; // HKLM
+                        inParams["sSubKeyName"] = @"SOFTWARE\Microsoft\Cryptography";
+                        inParams["sValueName"] = "MachineGuid";
+                        var outParams = regClass.InvokeMethod("GetStringValue", inParams, null);
+                        string guid = outParams["sValue"]?.ToString();
+                        if (!string.IsNullOrEmpty(guid))
+                        {
+                            result.UniqueID = guid.Trim().ToUpperInvariant();
+                            result.Source = "MachineGuid";
+                        }
+                    }
+                    catch { }
+                }
+
+                // Netzwerk-Interfaces sammeln
+                try
+                {
+                    using (var searcher = new ManagementObjectSearcher(scope,
+                        new ObjectQuery("SELECT Description, MACAddress, IPAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=true")))
+                    foreach (ManagementObject o in searcher.Get())
+                    {
+                        string mac = o["MACAddress"]?.ToString();
+                        if (string.IsNullOrEmpty(mac)) continue;
+                        var ips = o["IPAddress"] as string[];
+                        string ifIp = ips?.Length > 0 ? ips[0] : "";
+                        string desc = o["Description"]?.ToString() ?? "";
+                        string ifType = desc.ToLower().Contains("wi-fi") || desc.ToLower().Contains("wireless") ? "WiFi" : "Ethernet";
+                        result.Interfaces.Add((mac.Trim().ToUpperInvariant().Replace('-', ':'), ifIp, ifType));
+                    }
+                }
+                catch { }
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>
+        /// Ermittelt die UniqueID eines Linux/macOS-Geräts via SSH.
+        /// Linux: 1) /etc/machine-id  2) /sys/class/dmi/id/product_uuid
+        /// macOS: system_profiler Hardware UUID
+        /// Sammelt zusätzlich alle Netzwerk-Interfaces.
+        /// </summary>
+        public IdentifyResult IdentifyViaSsh(string ip, string username, string password, int port = 22)
+        {
+            var result = new IdentifyResult();
+            try
+            {
+                using (var client = new SshClient(
+                    new Renci.SshNet.ConnectionInfo(ip, port, username,
+                        new Renci.SshNet.PasswordAuthenticationMethod(username, password))
+                    { Timeout = TimeSpan.FromSeconds(15) }))
+                {
+                    client.Connect();
+                    if (!client.IsConnected) return result;
+
+                    // Betriebssystem erkennen
+                    string uname = RunSshCommand(client, "uname -s")?.Trim().ToLower() ?? "";
+
+                    if (uname == "darwin")
+                    {
+                        // macOS: Hardware UUID
+                        string hwUuid = RunSshCommand(client, "system_profiler SPHardwareDataType 2>/dev/null | grep 'Hardware UUID'");
+                        if (!string.IsNullOrEmpty(hwUuid))
+                        {
+                            string uuid = hwUuid.Split(':').LastOrDefault()?.Trim().ToUpperInvariant();
+                            if (!string.IsNullOrEmpty(uuid) && !IsInvalidUUID(uuid))
+                            {
+                                result.UniqueID = uuid;
+                                result.Source = "HW-UUID";
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Linux: /etc/machine-id (kein root nötig)
+                        string machineId = RunSshCommand(client, "cat /etc/machine-id 2>/dev/null")?.Trim();
+                        if (!string.IsNullOrEmpty(machineId) && machineId.Length >= 32)
+                        {
+                            result.UniqueID = machineId.ToUpperInvariant();
+                            result.Source = "machine-id";
+                        }
+
+                        // Fallback: SMBIOS UUID (braucht root)
+                        if (string.IsNullOrEmpty(result.UniqueID))
+                        {
+                            string smbios = RunSshCommand(client, "cat /sys/class/dmi/id/product_uuid 2>/dev/null || sudo dmidecode -s system-uuid 2>/dev/null")?.Trim();
+                            if (!string.IsNullOrEmpty(smbios) && !IsInvalidUUID(smbios.ToUpperInvariant()))
+                            {
+                                result.UniqueID = smbios.ToUpperInvariant();
+                                result.Source = "SMBIOS";
+                            }
+                        }
+                    }
+
+                    // Netzwerk-Interfaces sammeln (funktioniert auf Linux + macOS)
+                    string ifOutput = RunSshCommand(client, "ip -o link show 2>/dev/null || ifconfig -a 2>/dev/null");
+                    if (!string.IsNullOrEmpty(ifOutput))
+                    {
+                        // ip -o link: "2: eth0: ... link/ether AA:BB:CC:DD:EE:FF ..."
+                        var macRegex = new Regex(@"(?:link/ether|ether)\s+([0-9a-fA-F:]{17})", RegexOptions.IgnoreCase);
+                        var ifNameRegex = new Regex(@"^\d+:\s+(\S+?):", RegexOptions.Multiline);
+                        var matches = macRegex.Matches(ifOutput);
+                        var nameMatches = ifNameRegex.Matches(ifOutput);
+
+                        for (int i = 0; i < matches.Count; i++)
+                        {
+                            string mac = matches[i].Groups[1].Value.Trim().ToUpperInvariant();
+                            if (mac == "00:00:00:00:00:00") continue;
+                            string ifName = i < nameMatches.Count ? nameMatches[i].Groups[1].Value : "";
+                            string ifType = ifName.StartsWith("wl") || ifName.Contains("wifi") ? "WiFi" : "Ethernet";
+                            result.Interfaces.Add((mac, "", ifType));
+                        }
+                    }
+
+                    client.Disconnect();
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        private static string RunSshCommand(SshClient client, string command)
+        {
+            try
+            {
+                using (var cmd = client.RunCommand(command))
+                    return cmd.ExitStatus == 0 ? cmd.Result : null;
+            }
+            catch { return null; }
+        }
+
+        private static bool IsInvalidUUID(string uuid)
+        {
+            if (string.IsNullOrEmpty(uuid)) return true;
+            return INVALID_UUIDS.Any(inv => uuid.Equals(inv, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
     public class SoftwareManager
     {
         // Registry-Pfade wo Windows installierte Software speichert
@@ -1406,6 +1609,7 @@ namespace NmapInventory
             public CredentialTemplate MatchedTemplate { get; set; }
             public bool Success { get; set; }
             public string Message { get; set; }
+            public DeviceIdentifier.IdentifyResult Identity { get; set; }
         }
 
         public event Action<ScanResult> DeviceScanned;
@@ -1457,32 +1661,62 @@ namespace NmapInventory
             return results;
         }
 
+        // Alle Protokolle die pro Template durchprobiert werden
+        private static readonly (string Protocol, int Port)[] ALL_PROTOCOLS = {
+            ("WMI",    135),
+            ("SSH",     22),
+            ("SNMP",   161),
+            ("Telnet",  23),
+            ("HTTP",    80),
+            ("HTTPS",  443)
+        };
+
         private ScanResult TestDevice(DatabaseDevice device, List<CredentialTemplate> templates, bool retestExisting)
         {
             if (!retestExisting && device.CredentialTemplateID.HasValue)
                 return new ScanResult { Device = device, Success = false, Message = "Übersprungen (bereits getestet)" };
 
-            var applicable = templates
-                .Where(t => t.MatchesDeviceType(device.DeviceType))
-                .OrderBy(t => t.MatchesDeviceType(device.DeviceType) && !string.IsNullOrEmpty(t.DeviceTypes) ? 0 : 1)
-                .ThenBy(t => t.Priority)
-                .ToList();
-
-            foreach (var template in applicable)
+            foreach (var template in templates)
             {
                 try
                 {
                     string password = CredentialStore.Decrypt(template.EncryptedPass);
-                    bool success = TestProtocol(device.IP, template.Protocol, template.Username, password, template.EffectivePort);
 
-                    if (success)
-                        return new ScanResult
+                    foreach (var (protocol, port) in ALL_PROTOCOLS)
+                    {
+                        try
                         {
-                            Device = device,
-                            MatchedTemplate = template,
-                            Success = true,
-                            Message = $"{template.Protocol} {template.Username}:*** → Erfolg"
-                        };
+                            bool success = TestProtocol(device.IP, protocol, template.Username, password, port);
+                            if (success)
+                            {
+                                // UUID abrufen nach erfolgreichem Login
+                                DeviceIdentifier.IdentifyResult identity = null;
+                                try
+                                {
+                                    var identifier = new DeviceIdentifier();
+                                    if (protocol == "WMI")
+                                        identity = identifier.IdentifyWindows(device.IP, template.Username, password);
+                                    else if (protocol == "SSH")
+                                        identity = identifier.IdentifyViaSsh(device.IP, template.Username, password, port);
+                                }
+                                catch { }
+
+                                string msg = $"{protocol} {template.Username}:*** → Erfolg";
+                                if (identity != null && !string.IsNullOrEmpty(identity.UniqueID))
+                                    msg += $" [ID: {identity.Source}]";
+
+                                return new ScanResult
+                                {
+                                    Device = device,
+                                    MatchedTemplate = template,
+                                    Success = true,
+                                    Message = msg,
+                                    Identity = identity
+                                };
+                            }
+                        }
+                        catch { }
+                    }
                 }
                 catch { }
             }

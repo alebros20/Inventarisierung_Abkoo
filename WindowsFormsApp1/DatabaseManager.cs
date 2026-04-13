@@ -972,6 +972,7 @@ namespace NmapInventory
                                 ELSE 'Unbekannt'
                             END AS GeraetTypName,
                             d.Vendor, d.OS, d.Comment,
+                            d.UniqueID, d.UniqueIDSource,
                             d.FirstSeen AS ErsterScan, d.LastSeen AS LetzterScan,
                             (SELECT COUNT(*) FROM DevicePorts    WHERE DeviceID = d.ID) AS AnzahlPorts,
                             (SELECT COUNT(*) FROM DeviceSoftware WHERE DeviceID = d.ID) AS AnzahlSoftware
@@ -1188,7 +1189,7 @@ namespace NmapInventory
 
         private int GetOrCreateDevice(SQLiteConnection conn, string ip, string hostname, string macAddress = null)
         {
-            // Gerät suchen — zuerst per IP, falls nicht gefunden per MAC (Gerät hat IP gewechselt)
+            // Gerät suchen — Reihenfolge: IP → MAC → DeviceInterfaces (sekundäre MACs)
             int existingID = -1;
 
             using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE IP = @IP", conn))
@@ -1204,6 +1205,17 @@ namespace NmapInventory
                 using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE MacAddress = @MAC", conn))
                 {
                     cmd.Parameters.AddWithValue("@MAC", MacParam(macAddress));
+                    var result = cmd.ExecuteScalar();
+                    if (result != null) existingID = Convert.ToInt32(result);
+                }
+            }
+
+            // Per DeviceInterfaces suchen (sekundäre MACs → selbes Gerät)
+            if (existingID < 0 && !string.IsNullOrWhiteSpace(macAddress))
+            {
+                using (var cmd = new SQLiteCommand("SELECT DeviceID FROM DeviceInterfaces WHERE MacAddress = @MAC LIMIT 1", conn))
+                {
+                    cmd.Parameters.AddWithValue("@MAC", macAddress.Trim().ToUpperInvariant());
                     var result = cmd.ExecuteScalar();
                     if (result != null) existingID = Convert.ToInt32(result);
                 }
@@ -2020,19 +2032,15 @@ namespace NmapInventory
             {
                 conn.Open();
                 using (var cmd = new SQLiteCommand(
-                    "SELECT ID, Name, Protocol, Username, EncryptedPass, Port, DeviceTypes, Priority, Created FROM CredentialTemplates ORDER BY Priority, Name", conn))
+                    "SELECT ID, Name, Username, EncryptedPass, Created FROM CredentialTemplates ORDER BY Name", conn))
                 using (var r = cmd.ExecuteReader())
                     while (r.Read())
                         list.Add(new CredentialTemplate
                         {
                             ID            = Convert.ToInt32(r["ID"]),
                             Name          = r["Name"]?.ToString(),
-                            Protocol      = r["Protocol"]?.ToString(),
                             Username      = r["Username"]?.ToString(),
                             EncryptedPass = r["EncryptedPass"]?.ToString(),
-                            Port          = r["Port"] is DBNull ? (int?)null : Convert.ToInt32(r["Port"]),
-                            DeviceTypes   = r["DeviceTypes"]?.ToString(),
-                            Priority      = Convert.ToInt32(r["Priority"]),
                             Created       = r["Created"]?.ToString()
                         });
             }
@@ -2042,24 +2050,15 @@ namespace NmapInventory
         public void AddCredentialTemplate(CredentialTemplate t)
         {
             ExecuteNonQuery(
-                "INSERT INTO CredentialTemplates (Name, Protocol, Username, EncryptedPass, Port, DeviceTypes, Priority) VALUES (@Name, @Protocol, @Username, @EncryptedPass, @Port, @DeviceTypes, @Priority)",
-                new[] {
-                    ("@Name", t.Name), ("@Protocol", t.Protocol), ("@Username", t.Username ?? ""),
-                    ("@EncryptedPass", t.EncryptedPass), ("@Port", t.Port?.ToString() ?? (string)null),
-                    ("@DeviceTypes", t.DeviceTypes ?? (string)null), ("@Priority", t.Priority.ToString())
-                });
+                "INSERT INTO CredentialTemplates (Name, Protocol, Username, EncryptedPass) VALUES (@Name, '', @Username, @EncryptedPass)",
+                new[] { ("@Name", t.Name), ("@Username", t.Username ?? ""), ("@EncryptedPass", t.EncryptedPass) });
         }
 
         public void UpdateCredentialTemplate(CredentialTemplate t)
         {
             ExecuteNonQuery(
-                "UPDATE CredentialTemplates SET Name=@Name, Protocol=@Protocol, Username=@Username, EncryptedPass=@EncryptedPass, Port=@Port, DeviceTypes=@DeviceTypes, Priority=@Priority WHERE ID=@ID",
-                new[] {
-                    ("@ID", t.ID.ToString()), ("@Name", t.Name), ("@Protocol", t.Protocol),
-                    ("@Username", t.Username ?? ""), ("@EncryptedPass", t.EncryptedPass),
-                    ("@Port", t.Port?.ToString() ?? (string)null),
-                    ("@DeviceTypes", t.DeviceTypes ?? (string)null), ("@Priority", t.Priority.ToString())
-                });
+                "UPDATE CredentialTemplates SET Name=@Name, Username=@Username, EncryptedPass=@EncryptedPass WHERE ID=@ID",
+                new[] { ("@ID", t.ID.ToString()), ("@Name", t.Name), ("@Username", t.Username ?? ""), ("@EncryptedPass", t.EncryptedPass) });
         }
 
         public void DeleteCredentialTemplate(int id)
@@ -2231,7 +2230,8 @@ namespace NmapInventory
                 conn.Open();
                 using (var cmd = new SQLiteCommand(@"
                     SELECT d.ID, d.IP, d.Hostname, d.MacAddress, d.DeviceType, d.Vendor, d.OS,
-                           d.Comment, d.LastSeen, d.CredentialTemplateID, d.CredentialVerified
+                           d.Comment, d.LastSeen, d.CredentialTemplateID, d.CredentialVerified,
+                           d.UniqueID, d.UniqueIDSource
                     FROM Devices d
                     LEFT JOIN Locations l ON l.ID = d.StandortID
                     WHERE l.CustomerID = @CID
@@ -2251,7 +2251,9 @@ namespace NmapInventory
                                 OS         = r["OS"]?.ToString(),
                                 Comment    = r["Comment"]?.ToString(),
                                 Zeitstempel = r["LastSeen"]?.ToString(),
-                                CredentialTemplateID = r["CredentialTemplateID"] is DBNull ? (int?)null : Convert.ToInt32(r["CredentialTemplateID"])
+                                CredentialTemplateID = r["CredentialTemplateID"] is DBNull ? (int?)null : Convert.ToInt32(r["CredentialTemplateID"]),
+                                UniqueID       = r["UniqueID"] is DBNull ? null : r["UniqueID"]?.ToString(),
+                                UniqueIDSource = r["UniqueIDSource"] is DBNull ? null : r["UniqueIDSource"]?.ToString()
                             });
                 }
             }

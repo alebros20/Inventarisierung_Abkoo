@@ -1871,17 +1871,13 @@ namespace NmapInventory
     {
         public CredentialTemplate Template { get; private set; }
 
-        private TextBox txtName, txtUsername, txtPassword, txtPort;
-        private ComboBox cmbProtocol;
-        private CheckedListBox clbDeviceTypes;
-        private NumericUpDown nudPriority;
-        private Label lblPortHint;
+        private TextBox txtName, txtUsername, txtPassword;
         private bool passwordVisible = false;
 
         public CredentialTemplateEditDialog(CredentialTemplate existing = null)
         {
             Text = existing == null ? "Neue Vorlage" : "Vorlage bearbeiten";
-            Width = 460; Height = 520;
+            Width = 460; Height = 240;
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
@@ -1893,19 +1889,6 @@ namespace NmapInventory
             Controls.Add(new Label { Text = "Name:", Location = new System.Drawing.Point(14, y), AutoSize = true });
             txtName = new TextBox { Location = new System.Drawing.Point(140, y - 2), Width = 280 };
             Controls.Add(txtName);
-            y += 32;
-
-            // Protocol
-            Controls.Add(new Label { Text = "Protokoll:", Location = new System.Drawing.Point(14, y), AutoSize = true });
-            cmbProtocol = new ComboBox
-            {
-                Location = new System.Drawing.Point(140, y - 2), Width = 280,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
-            cmbProtocol.Items.AddRange(new object[] { "WMI", "SSH", "SNMP", "Telnet", "HTTP", "HTTPS" });
-            cmbProtocol.SelectedIndex = 0;
-            cmbProtocol.SelectedIndexChanged += (s, e) => UpdatePortPlaceholder();
-            Controls.Add(cmbProtocol);
             y += 32;
 
             // Username
@@ -1934,42 +1917,7 @@ namespace NmapInventory
                 txtPassword.UseSystemPasswordChar = !passwordVisible;
             };
             Controls.Add(btnEye);
-            y += 32;
-
-            // Port
-            Controls.Add(new Label { Text = "Port:", Location = new System.Drawing.Point(14, y), AutoSize = true });
-            txtPort = new TextBox { Location = new System.Drawing.Point(140, y - 2), Width = 100 };
-            Controls.Add(txtPort);
-            lblPortHint = new Label
-            {
-                Location = new System.Drawing.Point(248, y), AutoSize = true,
-                ForeColor = System.Drawing.Color.Gray
-            };
-            Controls.Add(lblPortHint);
-            y += 32;
-
-            // Priority
-            Controls.Add(new Label { Text = "Priorität:", Location = new System.Drawing.Point(14, y), AutoSize = true });
-            nudPriority = new NumericUpDown
-            {
-                Location = new System.Drawing.Point(140, y - 2), Width = 100,
-                Minimum = 0, Maximum = 999, Value = 0
-            };
-            Controls.Add(nudPriority);
-            y += 36;
-
-            // Device Types
-            Controls.Add(new Label { Text = "Gerätetypen:", Location = new System.Drawing.Point(14, y), AutoSize = true });
-            clbDeviceTypes = new CheckedListBox
-            {
-                Location = new System.Drawing.Point(140, y), Width = 280, Height = 150,
-                CheckOnClick = true
-            };
-            foreach (DeviceType dt in Enum.GetValues(typeof(DeviceType)))
-                if (dt != DeviceType.Unbekannt)
-                    clbDeviceTypes.Items.Add(new DeviceTypeItem(dt), false);
-            Controls.Add(clbDeviceTypes);
-            y += 158;
+            y += 40;
 
             // Buttons
             var btnOk = new Button
@@ -1991,25 +1939,10 @@ namespace NmapInventory
             if (existing != null)
             {
                 txtName.Text = existing.Name;
-                cmbProtocol.SelectedItem = existing.Protocol;
                 txtUsername.Text = existing.Username;
                 if (!string.IsNullOrEmpty(existing.EncryptedPass) && SessionKey.IsSet)
                     txtPassword.Text = CredentialStore.Decrypt(existing.EncryptedPass);
-                txtPort.Text = existing.Port?.ToString() ?? "";
-                nudPriority.Value = existing.Priority;
-                if (!string.IsNullOrEmpty(existing.DeviceTypes))
-                {
-                    var ids = existing.DeviceTypes.Split(',').Select(s => s.Trim()).ToHashSet();
-                    for (int i = 0; i < clbDeviceTypes.Items.Count; i++)
-                    {
-                        var item = (DeviceTypeItem)clbDeviceTypes.Items[i];
-                        if (ids.Contains(((int)item.Type).ToString()))
-                            clbDeviceTypes.SetItemChecked(i, true);
-                    }
-                }
             }
-
-            UpdatePortPlaceholder();
 
             btnOk.Click += (s, e) =>
             {
@@ -2026,37 +1959,14 @@ namespace NmapInventory
                     return;
                 }
 
-                var checkedTypes = new List<string>();
-                for (int i = 0; i < clbDeviceTypes.Items.Count; i++)
-                    if (clbDeviceTypes.GetItemChecked(i))
-                        checkedTypes.Add(((int)((DeviceTypeItem)clbDeviceTypes.Items[i]).Type).ToString());
-
                 Template = new CredentialTemplate
                 {
                     ID            = existing?.ID ?? 0,
                     Name          = txtName.Text.Trim(),
-                    Protocol      = cmbProtocol.SelectedItem.ToString(),
                     Username      = txtUsername.Text.Trim(),
-                    EncryptedPass = CredentialStore.Encrypt(txtPassword.Text),
-                    Port          = int.TryParse(txtPort.Text, out int p) ? (int?)p : null,
-                    DeviceTypes   = checkedTypes.Count > 0 ? string.Join(",", checkedTypes) : null,
-                    Priority      = (int)nudPriority.Value
+                    EncryptedPass = CredentialStore.Encrypt(txtPassword.Text)
                 };
             };
-        }
-
-        private void UpdatePortPlaceholder()
-        {
-            var temp = new CredentialTemplate { Protocol = cmbProtocol.SelectedItem?.ToString() ?? "SSH" };
-            if (lblPortHint != null)
-                lblPortHint.Text = $"(Standard: {temp.GetDefaultPort()})";
-        }
-
-        private class DeviceTypeItem
-        {
-            public DeviceType Type { get; }
-            public DeviceTypeItem(DeviceType type) { Type = type; }
-            public override string ToString() => $"{DeviceTypeHelper.GetIcon(Type)} {DeviceTypeHelper.GetLabel(Type)}";
         }
     }
 
@@ -2094,13 +2004,9 @@ namespace NmapInventory
             grid.ColumnHeadersDefaultCellStyle.Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold);
 
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ID", HeaderText = "ID", Width = 40, Visible = false });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Name", FillWeight = 25 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Protocol", HeaderText = "Protokoll", FillWeight = 12 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Username", HeaderText = "Benutzer", FillWeight = 15 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Password", HeaderText = "Passwort", FillWeight = 10 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Port", HeaderText = "Port", FillWeight = 8 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DeviceTypes", HeaderText = "Gerätetypen", FillWeight = 20 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Priority", HeaderText = "Prio", FillWeight = 6 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Name", FillWeight = 35 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Username", HeaderText = "Benutzer", FillWeight = 30 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Password", HeaderText = "Passwort", FillWeight = 20 });
 
             var btnPanel = new Panel { Dock = DockStyle.Bottom, Height = 44 };
             var btnAdd = new Button { Text = "Hinzufügen", Location = new System.Drawing.Point(6, 8), Width = 110, Height = 28 };
@@ -2141,20 +2047,7 @@ namespace NmapInventory
         {
             grid.Rows.Clear();
             foreach (var t in _db.GetCredentialTemplates())
-            {
-                string types = "";
-                if (!string.IsNullOrEmpty(t.DeviceTypes))
-                {
-                    types = string.Join(", ", t.DeviceTypes.Split(',')
-                        .Select(s => int.TryParse(s.Trim(), out int id) ? DeviceTypeHelper.GetLabel((DeviceType)id) : s));
-                }
-                else
-                {
-                    types = "(alle)";
-                }
-                grid.Rows.Add(t.ID, t.Name, t.Protocol, t.Username, "••••••",
-                    t.Port?.ToString() ?? "Standard", types, t.Priority);
-            }
+                grid.Rows.Add(t.ID, t.Name, t.Username, "••••••");
         }
 
         private void AddTemplate()
@@ -2331,11 +2224,37 @@ namespace NmapInventory
 
             var results = await _scanner.ScanDevicesAsync(_devices, templates, chkRetest.Checked);
 
-            // Save successful matches to DB
+            // Save successful matches to DB + UniqueID + Interfaces
+            int mergeCount = 0;
             foreach (var r in results.Where(r => r.Success && r.MatchedTemplate != null))
+            {
                 _db.SetDeviceCredential(r.Device.ID, r.MatchedTemplate.ID);
 
-            lblStatus.Text = $"Fertig: {_successCount}/{_devices.Count} Geräte authentifiziert";
+                if (r.Identity != null && !string.IsNullOrEmpty(r.Identity.UniqueID))
+                {
+                    // Prüfen ob bereits ein anderes Gerät diese UniqueID hat → Merge
+                    int existingId = _db.FindDeviceByUniqueID(r.Identity.UniqueID);
+                    if (existingId > 0 && existingId != r.Device.ID)
+                    {
+                        _db.MergeDevices(existingId, r.Device.ID);
+                        AppendLog($"  ↳ Duplikat erkannt: Gerät #{r.Device.ID} → #{existingId} zusammengeführt\n",
+                            System.Drawing.Color.FromArgb(255, 200, 100));
+                        mergeCount++;
+                        // Interfaces auf das Zielgerät speichern
+                        foreach (var iface in r.Identity.Interfaces)
+                            _db.AddDeviceInterface(existingId, iface.Mac, iface.IP, iface.Type);
+                    }
+                    else
+                    {
+                        _db.SetDeviceUniqueID(r.Device.ID, r.Identity.UniqueID, r.Identity.Source);
+                        foreach (var iface in r.Identity.Interfaces)
+                            _db.AddDeviceInterface(r.Device.ID, iface.Mac, iface.IP, iface.Type);
+                    }
+                }
+            }
+
+            string mergeInfo = mergeCount > 0 ? $", {mergeCount} Duplikat(e) zusammengeführt" : "";
+            lblStatus.Text = $"Fertig: {_successCount}/{_devices.Count} Geräte authentifiziert{mergeInfo}";
             btnStart.Enabled = true;
             chkRetest.Enabled = true;
             btnCancel.Text = "Schließen";
