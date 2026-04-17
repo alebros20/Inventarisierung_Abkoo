@@ -152,16 +152,107 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Data\DatabaseInitializer.cs" />
     <Compile Include="DatabaseManager.cs" />
-    <Compile Include="Dialogs.cs" />
     <Compile Include="Form1.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="Form1.Designer.cs">
       <DependentUpon>Form1.cs</DependentUpon>
     </Compile>
-    <Compile Include="Managers.cs" />
-    <Compile Include="Models.cs" />
+    <!-- Models -->
+    <Compile Include="Models\Enums.cs" />
+    <Compile Include="Models\DeviceModels.cs" />
+    <Compile Include="Models\SoftwareModels.cs" />
+    <Compile Include="Models\OrganizationModels.cs" />
+    <Compile Include="Models\CredentialModels.cs" />
+    <Compile Include="Models\SnmpModels.cs" />
+    <!-- Managers -->
+    <Compile Include="Managers\NmapScanner.cs" />
+    <Compile Include="Managers\HardwareManager.cs" />
+    <Compile Include="Managers\DeviceIdentifier.cs" />
+    <Compile Include="Managers\SoftwareManager.cs" />
+    <Compile Include="Managers\LinuxManager.cs" />
+    <Compile Include="Managers\AdbManager.cs" />
+    <Compile Include="Managers\IosManager.cs" />
+    <Compile Include="Managers\SnmpManager.cs" />
+    <Compile Include="Managers\CredentialScanner.cs" />
+    <Compile Include="Managers\CredentialStore.cs" />
+    <!-- UI Helpers -->
+    <Compile Include="UI\Helpers\DataExporter.cs" />
+    <!-- UI Dialogs -->
+    <Compile Include="UI\Dialogs\RemoteConnectionForm.cs" />
+    <Compile Include="UI\Dialogs\SavedCredentialsPicker.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\PasswordVerificationForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\InputDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\CustomerSelectionForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\IPImportDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\DatabaseSelectionDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\LoginDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\CredentialPasswordDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\SnmpSettingsDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\LinuxSshConnectionForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\AdbConnectionDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\CredentialTemplateEditDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\CredentialTemplateDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\CredentialScanDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\ScanDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\LocationSelectionDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <!-- UI Tabs (MainForm partial classes) -->
+    <Compile Include="UI\Tabs\DeviceTab.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Tabs\DatabaseTab.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Tabs\CustomerLocationTab.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Tabs\AuswertungTab.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <!-- UI Helpers (MainForm partial classes) -->
+    <Compile Include="UI\Helpers\ScanLogic.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Helpers\FormHelpers.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <!-- Extracted standalone helpers -->
+    <Compile Include="Models\ComboItem.cs" />
+    <Compile Include="Managers\OUIHelper.cs" />
     <Compile Include="Program.cs">
       <SubType>Form</SubType>
     </Compile>
