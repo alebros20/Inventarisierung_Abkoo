@@ -63,7 +63,7 @@ namespace NmapInventory
             pairPanel.Controls.Add(tbPairCode);
             Controls.Add(pairPanel);
 
-            var btnOk = new Button { Text = "Verbinden", Left = 225, Top = 268, Width = 90, DialogResult = DialogResult.OK };
+            var btnOk = new Button { Text = "Verbinden", Left = 225, Top = 268, Width = 90, Height = 28, DialogResult = DialogResult.OK };
             btnOk.Click += (s, e) =>
             {
                 if (string.IsNullOrWhiteSpace(tbIp.Text) || string.IsNullOrWhiteSpace(tbPort.Text))
@@ -77,7 +77,7 @@ namespace NmapInventory
                 DialogResult = DialogResult.OK;
                 Close();
             };
-            var btnCancel = new Button { Text = "Abbrechen", Left = 323, Top = 268, Width = 85, DialogResult = DialogResult.Cancel };
+            var btnCancel = new Button { Text = "Abbrechen", Left = 323, Top = 268, Width = 85, Height = 28, DialogResult = DialogResult.Cancel };
             Controls.AddRange(new Control[] { btnOk, btnCancel });
             AcceptButton = btnOk;
             CancelButton = btnCancel;

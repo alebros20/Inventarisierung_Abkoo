@@ -16,8 +16,8 @@ namespace NmapInventory
             MaximizeBox = false; MinimizeBox = false;
 
             var passwordTextBox = new TextBox { Location = new Point(20, 90), Width = 400, Font = new Font("Segoe UI", 11), UseSystemPasswordChar = true };
-            var okBtn = new Button { Text = "Bestätigen", Location = new Point(150, 150), Width = 100 };
-            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 150), Width = 100, DialogResult = DialogResult.Cancel };
+            var okBtn = new Button { Text = "Bestätigen", Location = new Point(150, 150), Width = 100, Height = 28 };
+            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 150), Width = 100, Height = 28, DialogResult = DialogResult.Cancel };
 
             okBtn.Click += (s, e) =>
             {

@@ -21,6 +21,9 @@ namespace NmapInventory
         {
             var tab = new TabPage("Auswertung");
 
+            // ── Oberer Bereich: Export / Backup (Dock=Top) ──────────────
+            var topPanel = new Panel { Dock = DockStyle.Top, Height = 210 };
+
             var infoLabel = new Label
             {
                 Text = "Exportiert Geräte, Software und Ports als XLSX und öffnet sie in LibreOffice Calc.",
@@ -41,7 +44,6 @@ namespace NmapInventory
             };
             calcExportButton.Click += (s, e) => ExportAndOpenInCalc();
 
-            // ── Trennlinie ──
             var separator = new Label { Dock = DockStyle.Top, Height = 20 };
 
             var backupLabel = new Label
@@ -56,35 +58,69 @@ namespace NmapInventory
 
             var btnPanel = new Panel { Dock = DockStyle.Top, Height = 48, Padding = new Padding(6, 4, 6, 4) };
 
-            var btnExportDb = new Button
+            var btnExportCustomer = new Button
             {
-                Text = "📥 Datenbank exportieren",
-                Location = new Point(6, 8), Width = 220, Height = 34,
+                Text = "📥 Kunde exportieren",
+                Location = new Point(6, 8), Width = 200, Height = 34,
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand
             };
-            btnExportDb.Click += (s, e) => ExportDatabase();
+            btnExportCustomer.Click += (s, e) => ExportCustomerDatabases();
 
-            var btnImportDb = new Button
+            var btnImportCustomer = new Button
             {
-                Text = "📤 Datenbank importieren",
-                Location = new Point(236, 8), Width = 220, Height = 34,
+                Text = "📤 Kunde importieren",
+                Location = new Point(216, 8), Width = 200, Height = 34,
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand
             };
-            btnImportDb.Click += (s, e) => ImportDatabase();
+            btnImportCustomer.Click += (s, e) => ImportCustomerDatabase();
 
-            btnPanel.Controls.Add(btnExportDb);
-            btnPanel.Controls.Add(btnImportDb);
+            var btnFullBackup = new Button
+            {
+                Text = "💾 Komplettes Backup",
+                Location = new Point(426, 8), Width = 200, Height = 34,
+                Font = new Font("Segoe UI", 10),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            btnFullBackup.Click += (s, e) => ExportDatabase();
 
-            // Dock-Reihenfolge: zuletzt hinzugefügt = oben
-            tab.Controls.Add(btnPanel);
-            tab.Controls.Add(backupLabel);
-            tab.Controls.Add(separator);
-            tab.Controls.Add(calcExportButton);
-            tab.Controls.Add(infoLabel);
+            btnPanel.Controls.Add(btnExportCustomer);
+            btnPanel.Controls.Add(btnImportCustomer);
+            btnPanel.Controls.Add(btnFullBackup);
+
+            var separator2 = new Label { Dock = DockStyle.Top, Height = 20 };
+
+            // Dock-Reihenfolge innerhalb topPanel: zuletzt hinzugefügt = oben
+            topPanel.Controls.Add(separator2);
+            topPanel.Controls.Add(btnPanel);
+            topPanel.Controls.Add(backupLabel);
+            topPanel.Controls.Add(separator);
+            topPanel.Controls.Add(calcExportButton);
+            topPanel.Controls.Add(infoLabel);
+
+            // ── Unterer Bereich: DB-Editor (Dock=Fill) ──────────────────
+            var dbEditorLabel = new Label
+            {
+                Text = "Datenbank bearbeiten:",
+                Dock = DockStyle.Top, Height = 26,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0),
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = SystemColors.ControlText
+            };
+
+            var dbEditorTabs = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
+            dbEditorTabs.TabPages.Add(CreateDBDeviceTab());
+            dbEditorTabs.TabPages.Add(CreateDBSoftwareTab());
+
+            // Dock-Reihenfolge im Tab: zuletzt hinzugefügt = oben
+            tab.Controls.Add(dbEditorTabs);       // Fill (bleibt unten)
+            tab.Controls.Add(dbEditorLabel);      // Dock=Top
+            tab.Controls.Add(topPanel);           // Dock=Top (wird oben angedockt)
             return tab;
         }
 
@@ -232,6 +268,28 @@ namespace NmapInventory
         // =========================================================
         // === DATENBANK BACKUP / RESTORE ===
         // =========================================================
+
+        private void ExportCustomerDatabases()
+        {
+            using (var dlg = new CustomerDbExportDialog(dbManager))
+            {
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                    statusLabel.Text = $"✔ {dlg.ExportedCount} Kunden-DB(s) exportiert";
+            }
+        }
+
+        private void ImportCustomerDatabase()
+        {
+            using (var dlg = new CustomerDbImportDialog(dbManager))
+            {
+                if (dlg.ShowDialog(this) == DialogResult.OK && dlg.ImportResult != null)
+                {
+                    statusLabel.Text = "✔ Kunden-DB importiert — " + dlg.ImportResult.Summary.Replace("\n", " | ");
+                    // Views neu laden
+                    RefreshAllViews();
+                }
+            }
+        }
 
         private void ExportDatabase()
         {

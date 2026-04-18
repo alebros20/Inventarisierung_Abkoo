@@ -106,8 +106,8 @@ namespace NmapInventory
             Controls.Add(panelV3);
 
             // ── Buttons ───────────────────────────────────────
-            var btnOk = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80 };
-            var btnCancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, Width = 90 };
+            var btnOk = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Height = 28 };
+            var btnCancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, Width = 90, Height = 28 };
             btnOk.Click += (_, __) => ApplySettings();
             btnOk.Left = 220; btnOk.Top = Height - 74;
             btnCancel.Left = 310; btnCancel.Top = Height - 74;

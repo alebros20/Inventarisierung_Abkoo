@@ -1,3 +1,4 @@
+using System;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -13,7 +14,7 @@ namespace NmapInventory
 
         public ScanMode SelectedMode { get; private set; } = ScanMode.None;
 
-        public ScanDialog()
+        public ScanDialog(Action onOpenSnmpSettings = null)
         {
             Text = "Scan starten";
             Size = new Size(420, 280);
@@ -75,11 +76,21 @@ namespace NmapInventory
             {
                 Text = "📡  SNMP-Scan",
                 Location = new Point(20, 184),
-                Size = new Size(365, 42),
+                Size = new Size(315, 42),
                 Font = new Font("Segoe UI", 11),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(10, 0, 0, 0)
             };
+            var btnSnmpSettings = new Button
+            {
+                Text = "⚙",
+                Location = new Point(343, 184),
+                Size = new Size(42, 42),
+                Font = new Font("Segoe UI", 14),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            var snmpToolTip = new ToolTip();
+            snmpToolTip.SetToolTip(btnSnmpSettings, "SNMP-Einstellungen");
             var lblSnmp = new Label
             {
                 Text = "SNMP-Abfrage aller gescannten Geräte",
@@ -89,8 +100,9 @@ namespace NmapInventory
                 ForeColor = Color.DarkSlateGray
             };
             btnSnmp.Click += (s, e) => { SelectedMode = ScanMode.SnmpScan; DialogResult = DialogResult.OK; Close(); };
+            btnSnmpSettings.Click += (s, e) => onOpenSnmpSettings?.Invoke();
 
-            Controls.AddRange(new Control[] { header, btnNetwork, lblNetwork, btnRemote, lblRemote, btnSnmp, lblSnmp });
+            Controls.AddRange(new Control[] { header, btnNetwork, lblNetwork, btnRemote, lblRemote, btnSnmp, btnSnmpSettings, lblSnmp });
         }
     }
 }

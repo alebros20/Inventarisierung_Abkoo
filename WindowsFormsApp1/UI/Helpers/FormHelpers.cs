@@ -2,12 +2,57 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Windows.Forms;
 
 namespace NmapInventory
 {
     public partial class MainForm
     {
+        /// <summary>
+        /// Ermittelt das lokale Netzwerk in CIDR-Notation (z.B. "192.168.2.0/24")
+        /// durch Auswertung der aktiven Netzwerk-Interfaces.
+        /// Gibt einen Fallback zurück, falls keine Netzwerk-Info gefunden wird.
+        /// </summary>
+        private static string GetLocalNetworkCidr()
+        {
+            try
+            {
+                var candidates = NetworkInterface.GetAllNetworkInterfaces()
+                    .Where(ni => ni.OperationalStatus == OperationalStatus.Up)
+                    .Where(ni => ni.NetworkInterfaceType != NetworkInterfaceType.Loopback
+                              && ni.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+                    // Interfaces mit echtem Gateway bevorzugen (vermeidet virtuelle Adapter)
+                    .OrderByDescending(ni => ni.GetIPProperties().GatewayAddresses
+                        .Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork
+                               && !g.Address.Equals(IPAddress.Any)));
+
+                foreach (var ni in candidates)
+                {
+                    foreach (var addr in ni.GetIPProperties().UnicastAddresses)
+                    {
+                        if (addr.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                        if (IPAddress.IsLoopback(addr.Address)) continue;
+                        if (addr.IPv4Mask == null) continue;
+
+                        var ipBytes = addr.Address.GetAddressBytes();
+                        var maskBytes = addr.IPv4Mask.GetAddressBytes();
+                        if (maskBytes.All(b => b == 0)) continue; // Ungültige Maske
+
+                        var netBytes = new byte[4];
+                        for (int i = 0; i < 4; i++) netBytes[i] = (byte)(ipBytes[i] & maskBytes[i]);
+                        int prefix = maskBytes.Sum(b => Convert.ToString(b, 2).Count(c => c == '1'));
+
+                        return $"{netBytes[0]}.{netBytes[1]}.{netBytes[2]}.{netBytes[3]}/{prefix}";
+                    }
+                }
+            }
+            catch { }
+            return "192.168.1.0/24";
+        }
+
         // Setzt Icon + Text auf einen Button (Icon links, Text rechts)
         private static void SetButtonIcon(Button btn, string text, int iconIndex, string dll = "imageres.dll")
         {

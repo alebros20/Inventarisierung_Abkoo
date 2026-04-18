@@ -21,8 +21,8 @@ namespace NmapInventory
                 combo.Items.Add(new ComboCustomerItem { ID = customer.ID, Name = customer.Name });
             if (combo.Items.Count > 0) combo.SelectedIndex = 0;
 
-            var okBtn = new Button { Text = "OK", Location = new Point(150, 120), Width = 100, DialogResult = DialogResult.OK, Font = new Font("Segoe UI", 10) };
-            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 120), Width = 100, DialogResult = DialogResult.Cancel, Font = new Font("Segoe UI", 10) };
+            var okBtn = new Button { Text = "OK", Location = new Point(150, 120), Width = 100, Height = 28, DialogResult = DialogResult.OK, Font = new Font("Segoe UI", 10) };
+            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(260, 120), Width = 100, Height = 28, DialogResult = DialogResult.Cancel, Font = new Font("Segoe UI", 10) };
 
             okBtn.Click += (s, e) =>
             {

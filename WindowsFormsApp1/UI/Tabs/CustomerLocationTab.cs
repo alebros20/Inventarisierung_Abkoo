@@ -73,7 +73,7 @@ namespace NmapInventory
 
         private Button CreateButton(string text, int x, Color color, Action onClick)
         {
-            var btn = new Button { Text = text, Location = new Point(x, 8), Width = 90, Font = new Font("Segoe UI", 10) };
+            var btn = new Button { Text = text, Location = new Point(x, 8), Width = 90, Height = 28, Font = new Font("Segoe UI", 10) };
             btn.Click += (s, e) => onClick();
             return btn;
         }

@@ -24,8 +24,8 @@ namespace NmapInventory
             locationTree = new TreeView { Location = new Point(10, 40), Width = 360, Height = 380, Font = new Font("Segoe UI", 10) };
             PopulateLocationTree();
 
-            var okBtn     = new Button { Text = "Verschieben", Location = new Point(140, 430), Width = 110, DialogResult = DialogResult.OK, Font = new Font("Segoe UI", 10) };
-            var cancelBtn = new Button { Text = "Abbrechen",   Location = new Point(260, 430), Width = 110, DialogResult = DialogResult.Cancel, Font = new Font("Segoe UI", 10) };
+            var okBtn     = new Button { Text = "Verschieben", Location = new Point(140, 430), Width = 110, Height = 28, DialogResult = DialogResult.OK, Font = new Font("Segoe UI", 10) };
+            var cancelBtn = new Button { Text = "Abbrechen",   Location = new Point(260, 430), Width = 110, Height = 28, DialogResult = DialogResult.Cancel, Font = new Font("Segoe UI", 10) };
             okBtn.Click += (s, e) =>
             {
                 var nodeData = locationTree.SelectedNode?.Tag as NodeData;

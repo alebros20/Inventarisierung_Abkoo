@@ -21,7 +21,6 @@ namespace NmapInventory
         private DataGridView deviceTable, dbDeviceTable, dbSoftwareTable;
         private TextBox rawOutputTextBox;
         private ComboBox locationComboBox;
-        private Button newLocationButton;
 
         // === MANAGERS ===
         private NmapScanner nmapScanner;
@@ -116,48 +115,50 @@ namespace NmapInventory
 
         private Panel CreateTopPanel()
         {
-            Panel topPanel = new Panel { Dock = DockStyle.Top, Height = 100, BackColor = SystemColors.Control };
+            Panel topPanel = new Panel { Dock = DockStyle.Top, Height = 80, BackColor = SystemColors.Control };
 
             var networkLabel = new Label { Text = "Netzwerk:", Location = new Point(10, 10), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
-            networkTextBox = new TextBox { Text = "192.168.2.0/24", Location = new Point(100, 8), Width = 200, Font = new Font("Segoe UI", 10) };
+            networkTextBox = new TextBox { Text = GetLocalNetworkCidr(), Location = new Point(100, 8), Width = 200, Font = new Font("Segoe UI", 10) };
 
             var locationLabel = new Label { Text = "Standort:", Location = new Point(10, 45), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             locationComboBox = new ComboBox { Location = new Point(100, 43), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
             locationComboBox.SelectedIndexChanged += (s, e) => OnLocationSelected();
 
-            newLocationButton = new Button { Location = new Point(310, 43), Width = 140, Height = 28, Font = new Font("Segoe UI", 10) };
-            SetButtonIcon(newLocationButton, "+ Neuer Standort", 3);
-            newLocationButton.Click += (s, e) => CreateNewLocation();
+            // Einheitliche Größe für alle Aktions-Buttons in der oberen Zeile
+            const int btnW = 160;
+            const int btnH = 28;
+            const int btnY = 8;
+            const int gap  = 10;
+            int x = 310;
 
-            scanButton = new Button { Location = new Point(460, 8), Width = 165, Height = 28, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            scanButton = new Button { Location = new Point(x, btnY), Width = btnW, Height = btnH, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             SetButtonIcon(scanButton, "Scan starten", 168);
             scanButton.Click += (s, e) => OpenScanDialog();
+            x += btnW + gap;
 
-            remoteHardwareButton = new Button();
-
-            exportButton = new Button { Location = new Point(634, 8), Width = 130, Height = 28, Font = new Font("Segoe UI", 10) };
+            exportButton = new Button { Location = new Point(x, btnY), Width = btnW, Height = btnH, Font = new Font("Segoe UI", 10) };
             SetButtonIcon(exportButton, "Exportieren", 162);
             exportButton.Click += (s, e) => ExportData();
+            x += btnW + gap;
 
-            refreshButton = new Button { Location = new Point(773, 8), Width = 140, Height = 28, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
+            refreshButton = new Button { Location = new Point(x, btnY), Width = btnW, Height = btnH, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
             refreshButton.Text = "🔄 Aktualisieren";
             refreshButton.Click += (s, e) => RefreshAllViews();
+            x += btnW + gap;
 
-            var credentialButton = new Button { Location = new Point(460, 42), Width = 160, Height = 28, Font = new Font("Segoe UI", 10) };
+            var credentialButton = new Button { Location = new Point(x, btnY), Width = btnW, Height = btnH, Font = new Font("Segoe UI", 10) };
             credentialButton.Text = "🔑 Passwort-Vorlagen";
             credentialButton.Click += (s, e) => { using (var dlg = new CredentialTemplateDialog(dbManager)) dlg.ShowDialog(this); };
 
-            var snmpSettingsBtn = new Button { Location = new Point(634, 42), Width = 160, Height = 28, Font = new Font("Segoe UI", 10) };
-            snmpSettingsBtn.Text = "⚙️ SNMP-Einstellungen";
-            snmpSettingsBtn.Click += (s, e) => OpenSnmpSettings();
+            remoteHardwareButton = new Button(); // Legacy-Feld, nicht im UI
 
-            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, newLocationButton, scanButton, exportButton, refreshButton, credentialButton, snmpSettingsBtn });
+            topPanel.Controls.AddRange(new Control[] { networkLabel, networkTextBox, locationLabel, locationComboBox, scanButton, exportButton, refreshButton, credentialButton });
             return topPanel;
         }
 
         private void OpenScanDialog()
         {
-            using (var dlg = new ScanDialog())
+            using (var dlg = new ScanDialog(OpenSnmpSettings))
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 switch (dlg.SelectedMode)
@@ -187,14 +188,12 @@ namespace NmapInventory
             var tabImages = new ImageList { ImageSize = new Size(24, 24), ColorDepth = ColorDepth.Depth32Bit };
             tabImages.Images.Add(ExtractDllIcon("imageres.dll", 109)); // 0: Geräte
             tabImages.Images.Add(ExtractDllIcon("imageres.dll", 168)); // 1: Nmap Ausgabe
-            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 27));  // 2: DB Geräte
-            tabImages.Images.Add(ExtractDllIcon("shell32.dll",  20));  // 3: DB Software
-            tabImages.Images.Add(GetStandardUserIcon(24));              // 4: Kunden
-            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 8));   // 5: Auswertung
+            tabImages.Images.Add(GetStandardUserIcon(24));              // 2: Kunden
+            tabImages.Images.Add(ExtractDllIcon("imageres.dll", 8));   // 3: Auswertung
             tabControl.ImageList = tabImages;
 
             var tabToolTip = new ToolTip { ShowAlways = true, InitialDelay = 300, AutoPopDelay = 5000 };
-            string[] tabNames = { "Geräte", "Nmap Ausgabe", "DB - Geräte", "DB - Software", "Kunden / Standorte", "Auswertung" };
+            string[] tabNames = { "Geräte", "Nmap Ausgabe", "Kunden / Standorte", "Auswertung" };
 
             tabControl.DrawItem += (s, e) =>
             {
@@ -230,8 +229,6 @@ namespace NmapInventory
 
             tabControl.TabPages.Add(CreateDeviceTab());
             tabControl.TabPages.Add(CreateNmapTab());
-            tabControl.TabPages.Add(CreateDBDeviceTab());
-            tabControl.TabPages.Add(CreateDBSoftwareTab());
             tabControl.TabPages.Add(CreateCustomerLocationTab());
             tabControl.TabPages.Add(CreateAuswertungTab());
 

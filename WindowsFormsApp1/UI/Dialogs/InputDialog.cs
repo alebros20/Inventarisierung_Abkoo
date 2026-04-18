@@ -18,8 +18,8 @@ namespace NmapInventory
 
             var txt1 = new TextBox { Location = new Point(20, 45), Width = 400 };
             var txt2 = new TextBox { Location = new Point(20, 105), Width = 400, Multiline = true, Height = 50 };
-            var okBtn = new Button { Text = "OK", Location = new Point(220, 165), Width = 90, DialogResult = DialogResult.OK };
-            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(320, 165), Width = 100, DialogResult = DialogResult.Cancel };
+            var okBtn = new Button { Text = "OK", Location = new Point(220, 165), Width = 90, Height = 28, DialogResult = DialogResult.OK };
+            var cancelBtn = new Button { Text = "Abbrechen", Location = new Point(320, 165), Width = 100, Height = 28, DialogResult = DialogResult.Cancel };
 
             okBtn.Click += (s, e) => { Value1 = txt1.Text; Value2 = txt2.Text; };
             this.Load += (s, e) => { txt1.Text = Value1 ?? ""; txt2.Text = Value2 ?? ""; };

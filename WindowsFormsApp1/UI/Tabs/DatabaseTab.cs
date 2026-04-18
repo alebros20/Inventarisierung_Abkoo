@@ -9,18 +9,37 @@ namespace NmapInventory
 {
     public partial class MainForm
     {
+        // Kunden-Filter für DB-Editor (werden bei Tab-Erstellung gefüllt)
+        private ComboBox dbDeviceCustomerCombo, dbDeviceTimeCombo;
+        private ComboBox dbSoftwareCustomerCombo, dbSoftwareTimeCombo;
+
         private TabPage CreateDBDeviceTab()
         {
             Panel panel = new Panel { Dock = DockStyle.Top, Height = 50 };
-            var filter = new ComboBox { Location = new Point(80, 12), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
-            filter.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
-            filter.SelectedIndex = 0;
-            filter.SelectedIndexChanged += (s, e) => LoadDatabaseDevices(filter.SelectedItem.ToString());
-            var saveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100, Font = new Font("Segoe UI", 10) };
+
+            dbDeviceTimeCombo = new ComboBox { Location = new Point(80, 12), Width = 130, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
+            dbDeviceTimeCombo.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
+            dbDeviceTimeCombo.SelectedIndex = 0;
+            dbDeviceTimeCombo.SelectedIndexChanged += (s, e) => ReloadDatabaseDevices();
+
+            dbDeviceCustomerCombo = new ComboBox { Location = new Point(275, 12), Width = 180, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
+            PopulateCustomerCombo(dbDeviceCustomerCombo);
+            // Handler ERST nach dem Befüllen anhängen, damit SelectedIndex=0 nicht ReloadDatabaseDevices() auslöst,
+            // bevor dbDeviceTable existiert.
+            dbDeviceCustomerCombo.SelectedIndexChanged += (s, e) => ReloadDatabaseDevices();
+
+            var saveBtn = new Button { Text = "Speichern", Location = new Point(465, 12), Width = 100, Height = 28, Font = new Font("Segoe UI", 10) };
             saveBtn.Click += (s, e) => SaveDatabaseDevices();
-            var deleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, Font = new Font("Segoe UI", 10) };
+            var deleteBtn = new Button { Text = "Zeile löschen", Location = new Point(575, 12), Width = 110, Height = 28, Font = new Font("Segoe UI", 10) };
             deleteBtn.Click += (s, e) => DeleteDatabaseDeviceRow();
-            panel.Controls.AddRange(new Control[] { new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) }, filter, saveBtn, deleteBtn });
+
+            panel.Controls.AddRange(new Control[] {
+                new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) },
+                dbDeviceTimeCombo,
+                new Label { Text = "Kunde:", Location = new Point(220, 15), AutoSize = true, Font = new Font("Segoe UI", 10) },
+                dbDeviceCustomerCombo,
+                saveBtn, deleteBtn
+            });
 
             dbDeviceTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10) };
             dbDeviceTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "ID", Width = 50, ReadOnly = true, Visible = false });
@@ -34,21 +53,34 @@ namespace NmapInventory
             var container = new Panel { Dock = DockStyle.Fill };
             container.Controls.Add(dbDeviceTable);
             container.Controls.Add(panel);
-            return new TabPage("DB - Geräte") { Controls = { container } };
+            return new TabPage("Geräte") { Controls = { container } };
         }
 
         private TabPage CreateDBSoftwareTab()
         {
             Panel panel = new Panel { Dock = DockStyle.Top, Height = 50 };
-            var filter = new ComboBox { Location = new Point(80, 12), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
-            filter.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
-            filter.SelectedIndex = 0;
-            filter.SelectedIndexChanged += (s, e) => LoadDatabaseSoftware(filter.SelectedItem.ToString());
-            var saveBtn = new Button { Text = "Speichern", Location = new Point(250, 12), Width = 100, Font = new Font("Segoe UI", 10) };
+
+            dbSoftwareTimeCombo = new ComboBox { Location = new Point(80, 12), Width = 130, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
+            dbSoftwareTimeCombo.Items.AddRange(new[] { "Alle", "Heute", "Diese Woche", "Dieser Monat", "Dieses Jahr" });
+            dbSoftwareTimeCombo.SelectedIndex = 0;
+            dbSoftwareTimeCombo.SelectedIndexChanged += (s, e) => ReloadDatabaseSoftware();
+
+            dbSoftwareCustomerCombo = new ComboBox { Location = new Point(275, 12), Width = 180, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10) };
+            PopulateCustomerCombo(dbSoftwareCustomerCombo);
+            dbSoftwareCustomerCombo.SelectedIndexChanged += (s, e) => ReloadDatabaseSoftware();
+
+            var saveBtn = new Button { Text = "Speichern", Location = new Point(465, 12), Width = 100, Height = 28, Font = new Font("Segoe UI", 10) };
             saveBtn.Click += (s, e) => SaveDatabaseSoftware();
-            var deleteBtn = new Button { Text = "Zeile löschen", Location = new Point(360, 12), Width = 100, Font = new Font("Segoe UI", 10) };
+            var deleteBtn = new Button { Text = "Zeile löschen", Location = new Point(575, 12), Width = 110, Height = 28, Font = new Font("Segoe UI", 10) };
             deleteBtn.Click += (s, e) => DeleteDatabaseSoftwareRow();
-            panel.Controls.AddRange(new Control[] { new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) }, filter, saveBtn, deleteBtn });
+
+            panel.Controls.AddRange(new Control[] {
+                new Label { Text = "Zeitraum:", Location = new Point(10, 15), AutoSize = true, Font = new Font("Segoe UI", 10) },
+                dbSoftwareTimeCombo,
+                new Label { Text = "Kunde:", Location = new Point(220, 15), AutoSize = true, Font = new Font("Segoe UI", 10) },
+                dbSoftwareCustomerCombo,
+                saveBtn, deleteBtn
+            });
 
             dbSoftwareTable = new DataGridView { Dock = DockStyle.Fill, ReadOnly = false, AllowUserToAddRows = false, ScrollBars = ScrollBars.Both, Font = new Font("Segoe UI", 10) };
             dbSoftwareTable.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "ID", Width = 50, ReadOnly = true, Visible = false });
@@ -63,7 +95,7 @@ namespace NmapInventory
             var container = new Panel { Dock = DockStyle.Fill };
             container.Controls.Add(dbSoftwareTable);
             container.Controls.Add(panel);
-            return new TabPage("DB - Software") { Controls = { container } };
+            return new TabPage("Software") { Controls = { container } };
         }
 
         private void RefreshAllViews()
@@ -73,8 +105,10 @@ namespace NmapInventory
             try
             {
                 // Inventar_* sind jetzt VIEWs — kein Refresh nötig
-                LoadDatabaseDevices();
-                LoadDatabaseSoftware();
+                if (dbDeviceCustomerCombo != null) PopulateCustomerCombo(dbDeviceCustomerCombo);
+                if (dbSoftwareCustomerCombo != null) PopulateCustomerCombo(dbSoftwareCustomerCombo);
+                ReloadDatabaseDevices();
+                ReloadDatabaseSoftware();
                 LoadCustomerTree();
                 statusLabel.Text = "✔ Daten aktualisiert — " + DateTime.Now.ToString("HH:mm:ss");
             }
@@ -89,21 +123,52 @@ namespace NmapInventory
             }
         }
 
-        private void LoadDatabaseDevices(string filter = "Alle")
+        private void PopulateCustomerCombo(ComboBox combo)
         {
+            combo.Items.Clear();
+            combo.Items.Add(new ComboItem { ID = -1, Display = "Alle Kunden" });
+            foreach (var c in dbManager.GetCustomers())
+                combo.Items.Add(new ComboItem { ID = c.ID, Display = c.Name });
+            combo.SelectedIndex = 0;
+        }
+
+        private static int? GetSelectedCustomerId(ComboBox combo)
+        {
+            if (combo?.SelectedItem is ComboItem it && it.ID > 0) return it.ID;
+            return null;
+        }
+
+        private void ReloadDatabaseDevices()
+        {
+            string timeFilter = dbDeviceTimeCombo?.SelectedItem?.ToString() ?? "Alle";
+            int? custId = GetSelectedCustomerId(dbDeviceCustomerCombo);
+            LoadDatabaseDevices(timeFilter, custId);
+        }
+
+        private void ReloadDatabaseSoftware()
+        {
+            string timeFilter = dbSoftwareTimeCombo?.SelectedItem?.ToString() ?? "Alle";
+            int? custId = GetSelectedCustomerId(dbSoftwareCustomerCombo);
+            LoadDatabaseSoftware(timeFilter, custId);
+        }
+
+        private void LoadDatabaseDevices(string filter = "Alle", int? customerId = null)
+        {
+            if (dbDeviceTable == null) return;
             dbDeviceTable.Rows.Clear();
             var displayed = new HashSet<string>();
-            foreach (var dev in dbManager.LoadDevices(filter))
+            foreach (var dev in dbManager.LoadDevices(filter, customerId))
                 if (displayed.Add(dev.IP))
                     dbDeviceTable.Rows.Add(dev.ID, dev.Zeitstempel, dev.IP, dev.Hostname, dev.MacAddress ?? "", dev.Status, dev.Ports,
                         $"{DeviceTypeHelper.GetIcon(dev.DeviceType)} {DeviceTypeHelper.GetLabel(dev.DeviceType)}");
         }
 
-        private void LoadDatabaseSoftware(string filter = "Alle")
+        private void LoadDatabaseSoftware(string filter = "Alle", int? customerId = null)
         {
+            if (dbSoftwareTable == null) return;
             dbSoftwareTable.Rows.Clear();
             var displayed = new HashSet<string>();
-            foreach (var sw in dbManager.LoadSoftware(filter))
+            foreach (var sw in dbManager.LoadSoftware(filter, customerId))
             {
                 string key = sw.PCName + "|" + sw.Name + "|" + sw.Version;
                 if (displayed.Add(key))

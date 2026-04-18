@@ -63,10 +63,10 @@ namespace NmapInventory
             PopulateList(allDevices);
 
             // --- Alle / Keine ---
-            var selectAllBtn = new Button { Text = "Alle auswählen", Location = new Point(10, 488), Width = 130, Font = new Font("Segoe UI", 10) };
+            var selectAllBtn = new Button { Text = "Alle auswählen", Location = new Point(10, 488), Width = 130, Height = 28, Font = new Font("Segoe UI", 10) };
             selectAllBtn.Click += (s, e) => { for (int i = 0; i < checkedListBox.Items.Count; i++) checkedListBox.SetItemChecked(i, true); };
 
-            var selectNoneBtn = new Button { Text = "Keine", Location = new Point(150, 488), Width = 80, Font = new Font("Segoe UI", 10) };
+            var selectNoneBtn = new Button { Text = "Keine", Location = new Point(150, 488), Width = 80, Height = 28, Font = new Font("Segoe UI", 10) };
             selectNoneBtn.Click += (s, e) => { for (int i = 0; i < checkedListBox.Items.Count; i++) checkedListBox.SetItemChecked(i, false); };
 
             countLabel = new Label { Location = new Point(245, 491), AutoSize = true, ForeColor = Color.DarkBlue };

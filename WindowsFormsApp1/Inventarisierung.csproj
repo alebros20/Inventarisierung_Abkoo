@@ -230,6 +230,12 @@
     <Compile Include="UI\Dialogs\LocationSelectionDialog.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="UI\Dialogs\CustomerDbExportDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Dialogs\CustomerDbImportDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <!-- UI Tabs (MainForm partial classes) -->
     <Compile Include="UI\Tabs\DeviceTab.cs">
       <SubType>Form</SubType>

@@ -61,8 +61,8 @@ namespace NmapInventory
             Controls.Add(btnBrowse);
             y += 36;
 
-            var btnOk = new Button { Text = "Verbinden", DialogResult = DialogResult.OK, Width = 90, Left = 210, Top = y };
-            var btnCancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, Width = 90, Left = 308, Top = y };
+            var btnOk = new Button { Text = "Verbinden", DialogResult = DialogResult.OK, Width = 90, Height = 28, Left = 210, Top = y };
+            var btnCancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, Width = 90, Height = 28, Left = 308, Top = y };
             btnOk.Click += (s, e) =>
             {
                 if (string.IsNullOrWhiteSpace(tbHost.Text)) { MessageBox.Show("Bitte Host angeben."); DialogResult = DialogResult.None; return; }

@@ -251,6 +251,283 @@ namespace NmapInventory
             catch { return new List<string>(); }
         }
 
+        // =========================================================
+        // === KUNDEN-DB IMPORT (Merge / Erweitern / Überschreiben) ==
+        // =========================================================
+        public enum CustomerImportMode
+        {
+            Merge,       // Duplikate aktualisieren, neue Einträge hinzufügen
+            Extend,      // Nur neue Einträge hinzufügen, bestehende unverändert lassen
+            Overwrite    // Ziel-Kunden-DB vollständig ersetzen
+        }
+
+        public class CustomerImportResult
+        {
+            public int DevicesInserted { get; set; }
+            public int DevicesUpdated  { get; set; }
+            public int SoftwareInserted { get; set; }
+            public int SoftwareUpdated  { get; set; }
+            public string Summary =>
+                $"Geräte: +{DevicesInserted} neu, {DevicesUpdated} aktualisiert\n" +
+                $"Software: +{SoftwareInserted} neu, {SoftwareUpdated} aktualisiert";
+        }
+
+        /// <summary>
+        /// Importiert eine Kunden-DB-Datei (nmap_customer_*.db) in einen Ziel-Kunden.
+        /// Mode steuert das Verhalten bei existierenden Einträgen.
+        /// </summary>
+        public CustomerImportResult ImportCustomerDatabase(string sourcePath, int targetCustomerId, CustomerImportMode mode)
+        {
+            var result = new CustomerImportResult();
+            if (!System.IO.File.Exists(sourcePath))
+                throw new System.IO.FileNotFoundException("Quell-Datenbank nicht gefunden: " + sourcePath);
+
+            EnsureCustomerDatabaseExists(targetCustomerId);
+            string destPath = GetCustomerDbPath(targetCustomerId);
+
+            if (mode == CustomerImportMode.Overwrite)
+            {
+                // Einfach Datei ersetzen
+                System.IO.File.Copy(sourcePath, destPath, true);
+                using (var conn = new SQLiteConnection($"Data Source={destPath};Version=3;"))
+                {
+                    conn.Open();
+                    using (var cmd = new SQLiteCommand("SELECT COUNT(*) FROM Devices", conn))
+                        result.DevicesInserted = Convert.ToInt32(cmd.ExecuteScalar());
+                    TryExecScalarInto(conn, "SELECT COUNT(*) FROM DeviceSoftware", v => result.SoftwareInserted = v);
+                }
+                return result;
+            }
+
+            // Merge / Extend: Per ATTACH DATABASE in die Ziel-DB ziehen
+            using (var conn = new SQLiteConnection($"Data Source={destPath};Version=3;"))
+            {
+                conn.Open();
+                using (var attach = new SQLiteCommand($"ATTACH DATABASE @p AS src", conn))
+                {
+                    attach.Parameters.AddWithValue("@p", sourcePath);
+                    attach.ExecuteNonQuery();
+                }
+
+                using (var tx = conn.BeginTransaction())
+                {
+                    // Map Source-DeviceID → Ziel-DeviceID (für Software-FK)
+                    var idMap = new Dictionary<long, long>();
+
+                    // ── DEVICES ────────────────────────────────────
+                    using (var srcCmd = new SQLiteCommand(@"
+                        SELECT ID, IP, Hostname, MacAddress, StandortID, FirstSeen, LastSeen,
+                               DeviceType, Vendor, OS, Comment, CustomHostname
+                        FROM src.Devices", conn))
+                    using (var reader = srcCmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            long srcId = Convert.ToInt64(reader["ID"]);
+                            string ip = reader["IP"]?.ToString();
+                            string mac = reader["MacAddress"]?.ToString();
+
+                            // Existierendes Gerät in Ziel-DB finden (per IP oder MAC)
+                            long existingId = FindDeviceIdByIpOrMac(conn, ip, mac);
+
+                            if (existingId > 0)
+                            {
+                                idMap[srcId] = existingId;
+                                if (mode == CustomerImportMode.Merge)
+                                {
+                                    UpdateDeviceFromRow(conn, (int)existingId, reader);
+                                    result.DevicesUpdated++;
+                                }
+                                // Extend: bestehendes Gerät unberührt lassen
+                            }
+                            else
+                            {
+                                long newId = InsertDeviceFromRow(conn, reader);
+                                idMap[srcId] = newId;
+                                result.DevicesInserted++;
+                            }
+                        }
+                    }
+
+                    // ── SOFTWARE ──────────────────────────────────
+                    using (var srcCmd = new SQLiteCommand(@"
+                        SELECT ID, DeviceID, Name, Version, Publisher, InstallLocation,
+                               InstallDate, Source, QueryTime, PCName
+                        FROM src.DeviceSoftware", conn))
+                    using (var reader = srcCmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            long srcDevId = reader["DeviceID"] == DBNull.Value ? 0 : Convert.ToInt64(reader["DeviceID"]);
+                            long destDevId = idMap.TryGetValue(srcDevId, out var mapped) ? mapped : 0;
+                            if (destDevId <= 0) continue;
+
+                            string name = reader["Name"]?.ToString() ?? "";
+                            if (string.IsNullOrWhiteSpace(name)) continue;
+
+                            long existingSwId = FindSoftwareId(conn, destDevId, name);
+
+                            if (existingSwId > 0)
+                            {
+                                if (mode == CustomerImportMode.Merge)
+                                {
+                                    UpdateSoftwareFromRow(conn, (int)existingSwId, reader);
+                                    result.SoftwareUpdated++;
+                                }
+                                // Extend: bestehenden Eintrag unberührt lassen
+                            }
+                            else
+                            {
+                                InsertSoftwareFromRow(conn, destDevId, reader);
+                                result.SoftwareInserted++;
+                            }
+                        }
+                    }
+
+                    tx.Commit();
+                }
+
+                using (var detach = new SQLiteCommand("DETACH DATABASE src", conn))
+                    detach.ExecuteNonQuery();
+            }
+
+            return result;
+        }
+
+        private static long FindDeviceIdByIpOrMac(SQLiteConnection conn, string ip, string mac)
+        {
+            if (!string.IsNullOrWhiteSpace(ip))
+            {
+                using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE IP=@IP LIMIT 1", conn))
+                {
+                    cmd.Parameters.AddWithValue("@IP", ip);
+                    var r = cmd.ExecuteScalar();
+                    if (r != null && r != DBNull.Value) return Convert.ToInt64(r);
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(mac))
+            {
+                using (var cmd = new SQLiteCommand("SELECT ID FROM Devices WHERE MacAddress=@M LIMIT 1", conn))
+                {
+                    cmd.Parameters.AddWithValue("@M", mac.Trim().ToUpperInvariant());
+                    var r = cmd.ExecuteScalar();
+                    if (r != null && r != DBNull.Value) return Convert.ToInt64(r);
+                }
+            }
+            return 0;
+        }
+
+        private static long FindSoftwareId(SQLiteConnection conn, long deviceId, string name)
+        {
+            using (var cmd = new SQLiteCommand(
+                "SELECT ID FROM DeviceSoftware WHERE DeviceID=@D AND Name=@N LIMIT 1", conn))
+            {
+                cmd.Parameters.AddWithValue("@D", deviceId);
+                cmd.Parameters.AddWithValue("@N", name);
+                var r = cmd.ExecuteScalar();
+                return (r != null && r != DBNull.Value) ? Convert.ToInt64(r) : 0;
+            }
+        }
+
+        private static long InsertDeviceFromRow(SQLiteConnection conn, System.Data.IDataRecord r)
+        {
+            using (var cmd = new SQLiteCommand(@"
+                INSERT INTO Devices (IP, Hostname, MacAddress, StandortID, FirstSeen, LastSeen,
+                                     DeviceType, Vendor, OS, Comment, CustomHostname)
+                VALUES (@IP, @HN, @MAC, @SID, @FS, @LS, @DT, @V, @OS, @C, @CH)", conn))
+            {
+                cmd.Parameters.AddWithValue("@IP", r["IP"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@HN", r["Hostname"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@MAC", r["MacAddress"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@SID", r["StandortID"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@FS", r["FirstSeen"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@LS", r["LastSeen"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@DT", r["DeviceType"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@V", r["Vendor"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@OS", r["OS"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@C", r["Comment"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@CH", r["CustomHostname"] ?? (object)DBNull.Value);
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = new SQLiteCommand("SELECT last_insert_rowid()", conn))
+                return Convert.ToInt64(cmd.ExecuteScalar());
+        }
+
+        private static void UpdateDeviceFromRow(SQLiteConnection conn, int deviceId, System.Data.IDataRecord r)
+        {
+            using (var cmd = new SQLiteCommand(@"
+                UPDATE Devices SET
+                    Hostname = COALESCE(NULLIF(@HN,''), Hostname),
+                    MacAddress = COALESCE(NULLIF(@MAC,''), MacAddress),
+                    Vendor = COALESCE(NULLIF(@V,''), Vendor),
+                    OS = COALESCE(NULLIF(@OS,''), OS),
+                    Comment = COALESCE(NULLIF(@C,''), Comment),
+                    LastSeen = COALESCE(@LS, LastSeen)
+                WHERE ID = @ID", conn))
+            {
+                cmd.Parameters.AddWithValue("@ID", deviceId);
+                cmd.Parameters.AddWithValue("@HN", r["Hostname"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@MAC", r["MacAddress"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@V", r["Vendor"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@OS", r["OS"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@C", r["Comment"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@LS", r["LastSeen"] ?? (object)DBNull.Value);
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        private static void InsertSoftwareFromRow(SQLiteConnection conn, long deviceId, System.Data.IDataRecord r)
+        {
+            using (var cmd = new SQLiteCommand(@"
+                INSERT INTO DeviceSoftware (DeviceID, Name, Version, Publisher, InstallLocation,
+                                            InstallDate, Source, QueryTime, PCName)
+                VALUES (@D, @N, @V, @P, @IL, @ID, @S, @Q, @PC)", conn))
+            {
+                cmd.Parameters.AddWithValue("@D", deviceId);
+                cmd.Parameters.AddWithValue("@N", r["Name"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@V", r["Version"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@P", r["Publisher"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@IL", r["InstallLocation"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@ID", r["InstallDate"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@S", r["Source"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@Q", r["QueryTime"] ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("@PC", r["PCName"] ?? (object)DBNull.Value);
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        private static void UpdateSoftwareFromRow(SQLiteConnection conn, int swId, System.Data.IDataRecord r)
+        {
+            using (var cmd = new SQLiteCommand(@"
+                UPDATE DeviceSoftware SET
+                    Version = COALESCE(NULLIF(@V,''), Version),
+                    Publisher = COALESCE(NULLIF(@P,''), Publisher),
+                    InstallDate = COALESCE(NULLIF(@ID,''), InstallDate),
+                    QueryTime = COALESCE(@Q, QueryTime)
+                WHERE ID = @SwID", conn))
+            {
+                cmd.Parameters.AddWithValue("@SwID", swId);
+                cmd.Parameters.AddWithValue("@V", r["Version"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@P", r["Publisher"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@ID", r["InstallDate"]?.ToString() ?? "");
+                cmd.Parameters.AddWithValue("@Q", r["QueryTime"] ?? (object)DBNull.Value);
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        private static void TryExecScalarInto(SQLiteConnection conn, string sql, Action<int> onValue)
+        {
+            try
+            {
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    var r = cmd.ExecuteScalar();
+                    if (r != null && r != DBNull.Value) onValue(Convert.ToInt32(r));
+                }
+            }
+            catch { }
+        }
+
         /// <summary>
         /// Extracts customerId from filename if pattern matches nmap_customer_{id}.db
         /// </summary>
@@ -1039,7 +1316,7 @@ namespace NmapInventory
             return history;
         }
 
-        public List<DatabaseDevice> LoadDevices(string filter = "Alle")
+        public List<DatabaseDevice> LoadDevices(string filter = "Alle", int? customerId = null)
         {
             var devices = new List<DatabaseDevice>();
             using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
@@ -1050,7 +1327,15 @@ namespace NmapInventory
                 TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN Comment TEXT DEFAULT ''");
                 TryAlterTable(conn, "ALTER TABLE Devices ADD COLUMN Vendor  TEXT DEFAULT ''");
 
-                string whereClause = GetDateFilter(filter, "d.LastSeen");
+                string dateWhere = GetDateFilter(filter, "d.LastSeen");
+                string custWhere = customerId.HasValue ? " AND l.CustomerID = @CustomerID" : "";
+                // Wenn dateWhere leer ist, brauchen wir ggf. WHERE statt AND
+                string combinedWhere;
+                if (string.IsNullOrWhiteSpace(dateWhere) && customerId.HasValue)
+                    combinedWhere = "WHERE l.CustomerID = @CustomerID";
+                else
+                    combinedWhere = dateWhere + custWhere;
+
                 string query = $@"
                     SELECT DISTINCT
                         d.ID, d.IP, d.Hostname, d.MacAddress,
@@ -1059,27 +1344,32 @@ namespace NmapInventory
                         sh.Status, sh.Ports
                     FROM Devices d
                     LEFT JOIN DeviceScanHistory sh ON d.ID = sh.DeviceID
-                    {whereClause}
+                    LEFT JOIN Locations l ON l.ID = d.StandortID
+                    {combinedWhere}
                     ORDER BY d.LastSeen DESC";
 
                 using (var cmd = new SQLiteCommand(query, conn))
-                using (var reader = cmd.ExecuteReader())
-                    while (reader.Read())
-                        devices.Add(new DatabaseDevice
-                        {
-                            ID = Convert.ToInt32(reader["ID"]),
-                            Zeitstempel = reader["Zeitstempel"]?.ToString(),
-                            IP = reader["IP"].ToString(),
-                            Hostname = reader["Hostname"]?.ToString(),
-                            MacAddress = reader["MacAddress"]?.ToString(),
-                            Vendor = reader["Vendor"]?.ToString(),
-                            Comment = reader["Comment"]?.ToString(),
-                            Status = reader["Status"]?.ToString(),
-                            Ports = reader["Ports"]?.ToString(),
-                            DeviceType = reader["DeviceType"] != DBNull.Value
-                                ? (DeviceType)Convert.ToInt32(reader["DeviceType"])
-                                : DeviceType.Unbekannt
-                        });
+                {
+                    if (customerId.HasValue)
+                        cmd.Parameters.AddWithValue("@CustomerID", customerId.Value);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read())
+                            devices.Add(new DatabaseDevice
+                            {
+                                ID = Convert.ToInt32(reader["ID"]),
+                                Zeitstempel = reader["Zeitstempel"]?.ToString(),
+                                IP = reader["IP"].ToString(),
+                                Hostname = reader["Hostname"]?.ToString(),
+                                MacAddress = reader["MacAddress"]?.ToString(),
+                                Vendor = reader["Vendor"]?.ToString(),
+                                Comment = reader["Comment"]?.ToString(),
+                                Status = reader["Status"]?.ToString(),
+                                Ports = reader["Ports"]?.ToString(),
+                                DeviceType = reader["DeviceType"] != DBNull.Value
+                                    ? (DeviceType)Convert.ToInt32(reader["DeviceType"])
+                                    : DeviceType.Unbekannt
+                            });
+                }
             }
             return devices;
         }
@@ -1202,13 +1492,20 @@ namespace NmapInventory
             }
         }
 
-        public List<DatabaseSoftware> LoadSoftware(string filter = "Alle")
+        public List<DatabaseSoftware> LoadSoftware(string filter = "Alle", int? customerId = null)
         {
             var software = new List<DatabaseSoftware>();
             using (var conn = new SQLiteConnection($"Data Source={DB_PATH};Version=3;"))
             {
                 conn.Open();
-                string whereClause = GetDateFilter(filter, "ds.QueryTime");
+                string dateWhere = GetDateFilter(filter, "ds.QueryTime");
+                string custWhere = customerId.HasValue ? " AND l.CustomerID = @CustomerID" : "";
+                string combinedWhere;
+                if (string.IsNullOrWhiteSpace(dateWhere) && customerId.HasValue)
+                    combinedWhere = "WHERE l.CustomerID = @CustomerID";
+                else
+                    combinedWhere = dateWhere + custWhere;
+
                 string query = $@"
                     SELECT
                         ds.ID, ds.DeviceID, ds.QueryTime as Zeitstempel,
@@ -1218,24 +1515,29 @@ namespace NmapInventory
                     FROM DeviceSoftware ds
                     LEFT JOIN Devices d ON d.ID = ds.DeviceID
                                        OR (ds.DeviceID IS NULL AND (d.IP = ds.PCName OR d.Hostname = ds.PCName))
-                    {whereClause}
+                    LEFT JOIN Locations l ON l.ID = d.StandortID
+                    {combinedWhere}
                     ORDER BY ds.QueryTime DESC";
 
                 using (var cmd = new SQLiteCommand(query, conn))
-                using (var reader = cmd.ExecuteReader())
-                    while (reader.Read())
-                        software.Add(new DatabaseSoftware
-                        {
-                            ID         = Convert.ToInt32(reader["ID"]),
-                            DeviceID   = reader["DeviceID"] == DBNull.Value ? 0 : Convert.ToInt32(reader["DeviceID"]),
-                            Zeitstempel = reader["Zeitstempel"].ToString(),
-                            Name       = reader["Name"].ToString(),
-                            Version    = reader["Version"]?.ToString(),
-                            Publisher  = reader["Publisher"]?.ToString(),
-                            InstallDate = reader["InstallDate"]?.ToString(),
-                            PCName     = reader["PCName"]?.ToString(),
-                            LastUpdate = reader["LastUpdate"]?.ToString()
-                        });
+                {
+                    if (customerId.HasValue)
+                        cmd.Parameters.AddWithValue("@CustomerID", customerId.Value);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read())
+                            software.Add(new DatabaseSoftware
+                            {
+                                ID         = Convert.ToInt32(reader["ID"]),
+                                DeviceID   = reader["DeviceID"] == DBNull.Value ? 0 : Convert.ToInt32(reader["DeviceID"]),
+                                Zeitstempel = reader["Zeitstempel"].ToString(),
+                                Name       = reader["Name"].ToString(),
+                                Version    = reader["Version"]?.ToString(),
+                                Publisher  = reader["Publisher"]?.ToString(),
+                                InstallDate = reader["InstallDate"]?.ToString(),
+                                PCName     = reader["PCName"]?.ToString(),
+                                LastUpdate = reader["LastUpdate"]?.ToString()
+                            });
+                }
             }
             return software;
         }
